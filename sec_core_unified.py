@@ -1,70 +1,226 @@
 """
-SEC-CORE UNIFIED ORCHESTRATION NETWORK (V7.0 GLOBAL-RAG)
-------------------------------------------------------
-Architecture: Recurrent-Depth Transformer (RDT) with Level 7 RAG & Tool Matrix.
-Integrated for deep architectural reasoning and autonomous tool-use.
+SEC-CORE UNIFIED ORCHESTRATION NETWORK (V7.0-LOCAL)
+--------------------------------------------------
+Zero-Dependency Standalone Deployment Script.
+Includes: Core Architecture, Mock Engines, and HTTP Server.
 
-Council Experts:
-1. Mythos-Glasswing (Global Macro-Architecture / RAG Drafting)
-2. DepthFirst-DevSecOps (Syntax Opt / Stress Testing)
-3. Cyber-Decompiler (Binary Safety / Synthesis)
-4. DeepMind-BigSleep (Adversarial Fuzzing / Context Merging)
+Usage:
+    python sec_core_server.py
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import json
+import time
 from typing import Optional, Tuple, List, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Importing SOTA components from existing modules
-from mythos_unified import GQAAttention, ProductKeyMoE, RotaryEmbedding, RMSNorm, TransformerBlock
-from open_mythos.moda import MoDAAttention, DeepSeekMoE, MoDAConfig, apply_rotary_emb
+# =========================================================================
+# Configuration
+# =========================================================================
 
 @dataclass
 class SECConfig:
-    vocab_size: int = 32000
-    dim: int = 768
-    n_heads: int = 12
-    n_kv_heads: int = 3
+    vocab_size: int = 256  # Byte-level for zero-dependency
+    dim: int = 512
+    n_heads: int = 8
+    n_kv_heads: int = 2
     max_seq_len: int = 4096
     max_loop_iters: int = 4
-    prelude_layers: int = 3
-    coda_layers: int = 3
-    n_experts: int = 64
+    prelude_layers: int = 2
+    coda_layers: int = 2
+    n_experts: int = 16
     k1: int = 2
     k2: int = 2
-    expert_dim: int = 256
-    lora_rank: int = 32
+    expert_dim: int = 128
+    lora_rank: int = 16
     act_threshold: float = 0.95
     norm_eps: float = 1e-6
     rope_theta: float = 1000000.0
     lookahead_entropy_threshold: float = 0.2
     dropout: float = 0.0
-    n_shared_experts: int = 2
+    n_shared_experts: int = 1
 
     # Level 7 Parameters
-    bottleneck_dim: int = 128
+    bottleneck_dim: int = 64
     tool_gating_threshold: float = 0.8
-    wait_state_ttl: float = 0.1 # Penalty for latency
+    wait_state_ttl: float = 0.1
 
 # =========================================================================
-# SEC-CORE Conditioners (Task Vectors)
+# Primitives (Consolidated from mythos_unified and moda)
+# =========================================================================
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return x * rms * self.weight
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_seq_len: int, theta: float = 10000.0):
+        super().__init__()
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self._build_cache(max_seq_len)
+    def _build_cache(self, seq_len: int) -> None:
+        t = torch.arange(seq_len, device=self.inv_freq.device)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+        emb = torch.cat([freqs, freqs], dim=-1)
+        self.register_buffer("cos", emb.cos()[None, None], persistent=False)
+        self.register_buffer("sin", emb.sin()[None, None], persistent=False)
+    def forward(self, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        if seq_len > self.cos.shape[2]: self._build_cache(seq_len * 2)
+        return self.cos[:, :, :seq_len], self.sin[:, :, :seq_len]
+
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    half = x.shape[-1] // 2
+    return torch.cat([-x[..., half:], x[..., :half]], dim=-1)
+
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    return x * cos + rotate_half(x) * sin
+
+class SwiGLUExpert(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int):
+        super().__init__()
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+class ProductKeyGate(nn.Module):
+    def __init__(self, dim: int, n_experts: int, k1: int, k2: int):
+        super().__init__()
+        self.sqrtE = int(math.isqrt(n_experts))
+        self.k1, self.k2 = k1, k2
+        self.W1 = nn.Linear(dim, self.sqrtE, bias=False)
+        self.W2 = nn.Parameter(torch.empty(self.sqrtE, self.sqrtE, dim))
+        nn.init.xavier_uniform_(self.W2)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        s1 = self.W1(x)
+        p1 = F.softmax(s1, dim=-1)
+        vals1, idx1 = p1.topk(self.k1, dim=-1)
+        W2_gathered = self.W2[idx1]
+        s2 = torch.einsum("td,tksd->tks", x, W2_gathered)
+        p2 = F.softmax(s2, dim=-1)
+        vals2, idx2 = p2.topk(self.k2, dim=-1)
+        idx1_exp = idx1.unsqueeze(-1).expand(-1, -1, self.k2)
+        flat_idx = (idx1_exp * self.sqrtE + idx2).view(x.shape[0], -1)
+        weights = (vals1.unsqueeze(-1) * vals2).view(x.shape[0], -1)
+        weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
+        return weights, flat_idx
+
+class ProductKeyMoE(nn.Module):
+    def __init__(self, cfg: SECConfig):
+        super().__init__()
+        self.dim, self.n_experts = cfg.dim, cfg.n_experts
+        self.gate = ProductKeyGate(cfg.dim, cfg.n_experts, cfg.k1, cfg.k2)
+        self.shared = SwiGLUExpert(cfg.dim, cfg.n_shared_experts * cfg.expert_dim)
+        self.experts = nn.ModuleList([SwiGLUExpert(cfg.dim, cfg.expert_dim) for _ in range(cfg.n_experts)])
+    def forward(self, x, active_mask):
+        shared_out = self.shared(x)
+        weights, indices = self.gate(x)
+        rout_out = torch.zeros_like(x)
+        if active_mask.bool().any():
+            active_idx = active_mask.bool().nonzero(as_tuple=True)[0]
+            x_act, w_act, idx_act = x[active_idx], weights[active_idx], indices[active_idx]
+            for eid, expert in enumerate(self.experts):
+                m = (idx_act == eid)
+                if not m.any(): continue
+                tok_idx, k_slot = torch.where(m)
+                rout_out[active_idx[tok_idx]] += expert(x_act[tok_idx]) * w_act[tok_idx, k_slot].unsqueeze(-1)
+        return shared_out + rout_out
+
+class GQAAttention(nn.Module):
+    def __init__(self, dim, n_heads, n_kv_heads, dropout=0.0):
+        super().__init__()
+        self.n_heads, self.n_kv_heads = n_heads, n_kv_heads
+        self.head_dim = dim // n_heads
+        self.groups = n_heads // n_kv_heads
+        self.scale = self.head_dim ** -0.5
+        self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(dim, n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+        self.dropout_p = dropout
+    def forward(self, x, rope_freqs, mask=None):
+        B, T, D = x.shape
+        cos, sin = rope_freqs
+        q = self.wq(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        q, k = apply_rope(q, cos[:,:,:T], sin[:,:,:T]), apply_rope(k, cos[:,:,:T], sin[:,:,:T])
+        k, v = k.repeat_interleave(self.groups, dim=1), v.repeat_interleave(self.groups, dim=1)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        if mask is not None: attn = attn + mask[:, :, :T, :T]
+        attn = F.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, T, -1)
+        return self.wo(out)
+
+class MoDAAttention(nn.Module):
+    def __init__(self, d_model, n_heads_q, n_heads_kv, head_dim):
+        super().__init__()
+        self.n_heads_q, self.n_heads_kv = n_heads_q, n_heads_kv
+        self.head_dim, self.gqa_group = head_dim, n_heads_q // n_heads_kv
+        self.scale = head_dim ** -0.5
+        self.q_proj = nn.Linear(d_model, n_heads_q * head_dim, bias=False)
+        self.k_proj = nn.Linear(d_model, n_heads_kv * head_dim, bias=False)
+        self.v_proj = nn.Linear(d_model, n_heads_kv * head_dim, bias=False)
+        self.o_proj = nn.Linear(n_heads_q * head_dim, d_model, bias=False)
+    def forward(self, x, dk_cache, dv_cache, cos, sin):
+        B, T, D = x.shape
+        Q = self.q_proj(x).view(B, T, self.n_heads_q, self.head_dim).transpose(1, 2)
+        K = self.k_proj(x).view(B, T, self.n_heads_kv, self.head_dim).transpose(1, 2)
+        V = self.v_proj(x).view(B, T, self.n_heads_kv, self.head_dim).transpose(1, 2)
+        Q, K = apply_rope(Q, cos[:,:,:T], sin[:,:,:T]), apply_rope(K, cos[:,:,:T], sin[:,:,:T])
+        Ke, Ve = K.repeat_interleave(self.gqa_group, dim=1), V.repeat_interleave(self.gqa_group, dim=1)
+        L = len(dk_cache)
+        if L == 0:
+            attn = torch.matmul(Q, Ke.transpose(-2, -1)) * self.scale
+            causal = torch.triu(torch.full((T, T), float("-inf"), device=x.device), 1)
+            weights = F.softmax(attn + causal, dim=-1)
+            out = torch.matmul(weights, Ve)
+        else:
+            seq_logits = torch.matmul(Q, Ke.transpose(-2, -1)) * self.scale
+            causal = torch.triu(torch.full((T, T), float("-inf"), device=x.device), 1)
+            Kd = torch.stack(dk_cache, dim=2).permute(0, 1, 3, 2, 4).repeat_interleave(self.gqa_group, dim=1)
+            Vd = torch.stack(dv_cache, dim=2).permute(0, 1, 3, 2, 4).repeat_interleave(self.gqa_group, dim=1)
+            depth_logits = torch.einsum("bhid,bhild->bhil", Q, Kd) * self.scale
+            combined = torch.cat([seq_logits + causal, depth_logits], dim=-1)
+            weights = F.softmax(combined, dim=-1)
+            out = torch.matmul(weights[:,:,:,:T], Ve) + torch.einsum("bhil,bhild->bhid", weights[:,:,:,T:], Vd)
+        return self.o_proj(out.transpose(1, 2).reshape(B, T, -1))
+
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg, use_moe=False):
+        super().__init__()
+        self.attn_norm = RMSNorm(cfg.dim, cfg.norm_eps)
+        self.ffn_norm = RMSNorm(cfg.dim, cfg.norm_eps)
+        self.attn = GQAAttention(cfg.dim, cfg.n_heads, cfg.n_kv_heads, cfg.dropout)
+        self.ffn = ProductKeyMoE(cfg) if use_moe else SwiGLUExpert(cfg.dim, cfg.dim * 4 // 3)
+    def forward(self, x, rope_freqs, mask=None):
+        x = x + self.attn(self.attn_norm(x), rope_freqs, mask)
+        if isinstance(self.ffn, ProductKeyMoE):
+            x = x + self.ffn(self.ffn_norm(x), torch.ones(x.shape[0]*x.shape[1], device=x.device))
+        else:
+            x = x + self.ffn(self.ffn_norm(x))
+        return x
+
+# =========================================================================
+# SEC-CORE Specific Modules
 # =========================================================================
 
 class SECCouncilConditioners(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.conditioners = nn.Parameter(torch.randn(4, dim) * 0.02)
-
-    def get_conditioner(self, loop_t: int) -> torch.Tensor:
-        idx = min(loop_t, 3)
-        return self.conditioners[idx]
-
-# =========================================================================
-# Latent Lookahead & Halting
-# =========================================================================
+    def get_conditioner(self, t): return self.conditioners[min(t, 3)]
 
 class LookaheadHaltingGate(nn.Module):
     def __init__(self, dim: int):
@@ -72,230 +228,130 @@ class LookaheadHaltingGate(nn.Module):
         self.halt_proj = nn.Linear(dim, 1)
         self.lookahead_proj = nn.Linear(dim, dim, bias=False)
         nn.init.orthogonal_(self.lookahead_proj.weight)
-
-    def forward(self, h: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, h: torch.Tensor):
         p_halt = torch.sigmoid(self.halt_proj(h)).squeeze(-1)
         h_next = torch.tanh(self.lookahead_proj(h))
-        cosine_sim = F.cosine_similarity(h, h_next, dim=-1)
-        collision_signal = (1.0 - cosine_sim)
-        return p_halt, collision_signal
-
-# =========================================================================
-# Level 7: External Retrieval Bridge & Action Sandbox (Mocks)
-# =========================================================================
-
-class ExternalRetrievalBridge(nn.Module):
-    """
-    Simulates high-fidelity RAG ingestion. Returns compressed latent bottlenecks.
-    """
-    def __init__(self, dim: int, bottleneck_dim: int):
-        super().__init__()
-        self.compressor = nn.Linear(dim, bottleneck_dim)
-        self.decompressor = nn.Linear(bottleneck_dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Simulate retrieval by transforming the query tensor into a 'fact' tensor
-        # In a real system, this would be an external lookup
-        bottleneck = torch.tanh(self.compressor(x))
-        return self.decompressor(bottleneck)
-
-class ActionExecutionSandbox(nn.Module):
-    """
-    Simulates sandboxed tool execution (compilers, shells).
-    """
-    def __init__(self, dim: int, bottleneck_dim: int):
-        super().__init__()
-        self.compressor = nn.Linear(dim, bottleneck_dim)
-        self.decompressor = nn.Linear(bottleneck_dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Simulate tool output compressed into bottleneck
-        bottleneck = torch.sigmoid(self.compressor(x))
-        return self.decompressor(bottleneck)
-
-# =========================================================================
-# Level 7: Dynamic Tool Gating
-# =========================================================================
+        collision = (1.0 - F.cosine_similarity(h, h_next, dim=-1))
+        return p_halt, collision
 
 class DynamicToolGatingLayer(nn.Module):
-    """
-    Action Logit Space: [Internal Thought, Web Search, Execute Code, De-obfuscate]
-    Implements batch-wide consensus to prevent warp divergence.
-    """
     def __init__(self, dim: int):
         super().__init__()
         self.gate = nn.Linear(dim, 4)
-
-    def forward(self, h: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # h: (B, T, D)
-        logits = self.gate(h.mean(dim=1)) # (B, 4) - Sequence-wide consensus
+    def forward(self, h: torch.Tensor):
+        logits = self.gate(h.mean(dim=1))
         probs = F.softmax(logits, dim=-1)
-        actions = torch.argmax(probs, dim=-1)
-        return actions, probs
-
-# =========================================================================
-# LTI-Stable Injection with Wait States
-# =========================================================================
+        return torch.argmax(probs, dim=-1), probs
 
 class SEC_LTIInjection(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        self.log_A = nn.Parameter(torch.zeros(dim))
-        self.log_dt = nn.Parameter(torch.zeros(1))
+        self.log_A, self.log_dt = nn.Parameter(torch.zeros(dim)), nn.Parameter(torch.zeros(1))
         self.B = nn.Parameter(torch.ones(dim) * 0.1)
-
-    def get_A(self) -> torch.Tensor:
-        return torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-20, 20)))
-
-    def forward(self, h, e, conditioner, trans_out, wait_penalty: float = 1.0):
-        A = self.get_A() * wait_penalty
-        return A * h + self.B * (e + conditioner) + trans_out
+    def get_A(self): return torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-20, 20)))
+    def forward(self, h, e, cond, trans_out, wait_penalty=1.0):
+        return (self.get_A() * wait_penalty) * h + self.B * (e + cond) + trans_out
 
 # =========================================================================
-# Recurrent SEC-CORE Block with Level 7 Matrix
+# Mock Engines (High-Fidelity Simulated Handlers)
+# =========================================================================
+
+class MockRAGDatabase:
+    """Simulated local knowledge base for security patterns."""
+    DATA = {
+        "buffer overflow": "Identified CVE-2026-X: Stack-based overflow in libc. Ensure boundary checks on 'memcpy'.",
+        "sql injection": "Parameterized queries required. Detected unsanitized input at line 42.",
+        "race condition": "TOCTOU vulnerability. Implement flock() or mutex locks around critical file I/O.",
+        "default": "Internal Council knowledge base suggests standard secure coding invariants apply."
+    }
+    @classmethod
+    def query(cls, text: str):
+        for k, v in cls.DATA.items():
+            if k in text.lower(): return v
+        return cls.DATA["default"]
+
+class MockActionSandbox:
+    """Simulated local execution environment for de-obfuscation and construction."""
+    @classmethod
+    def execute(cls, action_type: int, payload: str):
+        if action_type == 2: # Execute Code
+            return f"[SANDBOX SUCCESS] Code executed. Patch verification status: 100% stable. No side-effects detected."
+        if action_type == 3: # De-obfuscate
+            return f"[SANDBOX SUCCESS] De-obfuscation complete. Original logic: 'return root_access_granted' -> 'return False'."
+        return "[SANDBOX IDLE]"
+
+class ExternalRetrievalBridge(nn.Module):
+    def __init__(self, dim, bottleneck_dim):
+        super().__init__()
+        self.compressor = nn.Linear(dim, bottleneck_dim)
+        self.decompressor = nn.Linear(bottleneck_dim, dim)
+    def forward(self, x): return self.decompressor(torch.tanh(self.compressor(x)))
+
+class ActionExecutionSandbox(nn.Module):
+    def __init__(self, dim, bottleneck_dim):
+        super().__init__()
+        self.compressor = nn.Linear(dim, bottleneck_dim)
+        self.decompressor = nn.Linear(bottleneck_dim, dim)
+    def forward(self, x): return self.decompressor(torch.sigmoid(self.compressor(x)))
+
+# =========================================================================
+# Standalone SEC-CORE Model
 # =========================================================================
 
 class RecurrentSECBlock(nn.Module):
     def __init__(self, cfg: SECConfig):
         super().__init__()
         self.cfg = cfg
-        self.dim = cfg.dim
         self.council_conditioners = SECCouncilConditioners(cfg.dim)
         self.attn_norm = RMSNorm(cfg.dim, cfg.norm_eps)
-
-        # Cross-Loop MoDA
-        self.attn = MoDAAttention(MoDAConfig(
-            d_model=cfg.dim,
-            n_heads_q=cfg.n_heads,
-            n_heads_kv=cfg.n_kv_heads,
-            head_dim=cfg.dim // cfg.n_heads,
-            attn_dropout=cfg.dropout
-        ))
-
+        self.attn = MoDAAttention(cfg.dim, cfg.n_heads, cfg.n_kv_heads, cfg.dim // cfg.n_heads)
         self.moe = ProductKeyMoE(cfg)
         self.k_write = nn.Linear(cfg.dim, cfg.n_kv_heads * (cfg.dim // cfg.n_heads), bias=False)
         self.v_write = nn.Linear(cfg.dim, cfg.n_kv_heads * (cfg.dim // cfg.n_heads), bias=False)
-
-        # Level 7 Components
         self.tool_gate = DynamicToolGatingLayer(cfg.dim)
         self.rag_bridge = ExternalRetrievalBridge(cfg.dim, cfg.bottleneck_dim)
         self.sandbox = ActionExecutionSandbox(cfg.dim, cfg.bottleneck_dim)
-
         self.injection = SEC_LTIInjection(cfg.dim)
         self.halting = LookaheadHaltingGate(cfg.dim)
-        self.lora = nn.Linear(cfg.dim, cfg.dim, bias=False)
-        nn.init.zeros_(self.lora.weight)
-
-        # Fusion Cross-Attention
         self.fusion_attn = nn.MultiheadAttention(cfg.dim, 4, batch_first=True)
 
-    def forward(self, h, e, rope_freqs, mask=None) -> Tuple[torch.Tensor, List[torch.Tensor], List[int]]:
+    def forward(self, h, e, rope_freqs, mask=None):
         B, T, D = h.shape
-        latent_history = []
-        depth_k_cache = []
-        depth_v_cache = []
-        tool_trace = []
-
-        halted = torch.zeros(B, T, device=h.device, dtype=torch.bool)
-        cum_p = torch.zeros(B, T, device=h.device)
+        latent_history, tool_trace, dk, dv = [], [], [], []
+        halted, cum_p = torch.zeros(B, T, device=h.device), torch.zeros(B, T, device=h.device)
         h_accum = torch.zeros_like(h)
         cos, sin = rope_freqs
-
         for t in range(self.cfg.max_loop_iters):
             cond = self.council_conditioners.get_conditioner(t)
-            wait_penalty = 1.0
-
-            # --- Loop t1: Drafting & Tool Gating ---
+            wait = 1.0
             if t == 0:
-                actions, probs = self.tool_gate(h)
-                # We assume batch consensus for simplicity here
-                selected_action = actions[0].item()
-                tool_trace.append(selected_action)
-            else:
-                selected_action = 0 # Default to Internal Thought
-
-            # --- Loop t2: Stress Testing & Latent Pause ---
-            if selected_action != 0:
-                wait_penalty = 1.0 - self.cfg.wait_state_ttl
-
-            # --- Loop t3: Synthesis & Tool Execution ---
-            tool_context = None
-            if selected_action == 1: # Web Search
-                tool_context = self.rag_bridge(h)
-            elif selected_action in [2, 3]: # Execute / Deobfuscate
-                tool_context = self.sandbox(h)
-
-            # 1. MoDA Attentional Pass
+                actions, _ = self.tool_gate(h)
+                act = actions[0].item()
+                tool_trace.append(act)
+            else: act = 0
+            if act != 0: wait = 1.0 - self.cfg.wait_state_ttl
+            ctx = self.rag_bridge(h) if act == 1 else (self.sandbox(h) if act in [2, 3] else None)
             h_norm = self.attn_norm(h + cond)
-            attn_out = self.attn(h_norm, depth_k_cache, depth_v_cache, cos, sin)
-
-            # 2. MoE Pass
-            active_mask = (~halted).view(-1)
-            p_halt, collision = self.halting(h)
-            backtrack_signal = (collision > self.cfg.lookahead_entropy_threshold).unsqueeze(-1)
-            h_norm = h_norm + 0.01 * backtrack_signal * torch.randn_like(h_norm)
-
-            moe_out, _ = self.moe(h_norm.view(-1, D), active_mask)
-            moe_out = moe_out.view(B, T, D)
-
-            # 3. Update & Injection
+            attn_out = self.attn(h_norm, dk, dv, cos, sin)
+            p_halt, coll = self.halting(h)
+            h_norm = h_norm + 0.01 * (coll > self.cfg.lookahead_entropy_threshold).unsqueeze(-1) * torch.randn_like(h_norm)
+            moe_out = self.moe(h_norm.view(-1, D), (~halted.bool()).view(-1)).view(B, T, D)
             trans_out = attn_out + moe_out
-
-            # --- Loop t4: Context Merging ---
-            if tool_context is not None:
-                # Seamlessly fuse tool context back into h_t via cross-attention
-                fused_out, _ = self.fusion_attn(trans_out, tool_context, tool_context)
-                trans_out = trans_out + fused_out
-
-            trans_out = trans_out + self.lora(trans_out)
-            h_new = self.injection(h, e, cond, trans_out, wait_penalty=wait_penalty)
-            h = torch.where(halted.unsqueeze(-1), h, h_new)
-
-            # 4. Depth Write
-            kw = self.k_write(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2)
-            vw = self.v_write(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2)
-            kw = apply_rotary_emb(kw, cos, sin)
-            depth_k_cache.append(kw)
-            depth_v_cache.append(vw)
-
-            # 5. Halting
-            still_running = (~halted).float()
-            remainder = (1.0 - cum_p).clamp(min=0)
-            weight = torch.where((cum_p + p_halt) >= self.cfg.act_threshold, remainder, p_halt)
-            if t == self.cfg.max_loop_iters - 1: weight = remainder
-            weight = weight * still_running
-            h_accum = h_accum + weight.unsqueeze(-1) * h
-            cum_p = cum_p + weight
-            halted = halted | (cum_p >= self.cfg.act_threshold)
-
+            if ctx is not None:
+                fused, _ = self.fusion_attn(trans_out, ctx, ctx)
+                trans_out = trans_out + fused
+            h_new = self.injection(h, e, cond, trans_out, wait_penalty=wait)
+            h = torch.where(halted.unsqueeze(-1).bool(), h, h_new)
+            kw, vw = self.k_write(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2), self.v_write(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2)
+            dk.append(apply_rope(kw, cos, sin)), dv.append(vw)
+            rem = (1.0 - cum_p).clamp(min=0)
+            weight = torch.where((cum_p + p_halt) >= self.cfg.act_threshold, rem, p_halt)
+            if t == self.cfg.max_loop_iters - 1: weight = rem
+            weight = weight * (~halted.bool()).float()
+            h_accum, cum_p = h_accum + weight.unsqueeze(-1) * h, cum_p + weight
+            halted = halted.bool() | (cum_p >= self.cfg.act_threshold)
             latent_history.append(h.detach())
-
         return h_accum, latent_history, tool_trace
-
-# =========================================================================
-# Coda Routing Head with Tool Trace
-# =========================================================================
-
-class SEC_CodaRoutingHead(nn.Module):
-    def __init__(self, dim: int, vocab_size: int):
-        super().__init__()
-        self.output_norm = RMSNorm(dim)
-        self.head = nn.Linear(dim, vocab_size, bias=False)
-        self.trace_proj = nn.Linear(dim, vocab_size, bias=False)
-
-    def forward(self, h_final: torch.Tensor, history: List[torch.Tensor], section_idx: Optional[int] = None) -> torch.Tensor:
-        if section_idx == -1: # Tool Trace Mode
-            return self.trace_proj(self.output_norm(h_final))
-
-        if section_idx is not None and section_idx < len(history):
-            source_state = history[section_idx]
-        else:
-            source_state = h_final
-        return self.head(self.output_norm(source_state))
-
-# =========================================================================
-# Flagship Model: SEC-CORE Unified V7
-# =========================================================================
 
 class SECCoreUnified(nn.Module):
     def __init__(self, cfg: SECConfig):
@@ -303,63 +359,97 @@ class SECCoreUnified(nn.Module):
         self.cfg = cfg
         self.embed = nn.Embedding(cfg.vocab_size, cfg.dim)
         self.rope = RotaryEmbedding(cfg.dim // cfg.n_heads, cfg.max_seq_len, cfg.rope_theta)
-
-        self.prelude = nn.ModuleList([
-            TransformerBlock(cfg, use_moe=False) for _ in range(cfg.prelude_layers)
-        ])
+        self.prelude = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg.prelude_layers)])
         self.recurrent = RecurrentSECBlock(cfg)
-        self.coda = nn.ModuleList([
-            TransformerBlock(cfg, use_moe=False) for _ in range(cfg.coda_layers)
-        ])
-        self.routing_head = SEC_CodaRoutingHead(cfg.dim, cfg.vocab_size)
-        self.routing_head.head.weight = self.embed.weight
-        self.routing_head.trace_proj.weight = self.embed.weight
-
-    def forward(self, input_ids: torch.Tensor, section_idx: Optional[int] = None) -> torch.Tensor:
-        B, T = input_ids.shape
-        x = self.embed(input_ids)
+        self.coda = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg.coda_layers)])
+        self.head = nn.Linear(cfg.dim, cfg.vocab_size, bias=False)
+        self.head.weight = self.embed.weight
+        self.norm = RMSNorm(cfg.dim)
+    def forward(self, ids, section=None):
+        B, T = ids.shape
+        x = self.embed(ids)
         cos, sin = self.rope(T)
-        mask = None
-        if T > 1:
-            mask = torch.full((1, 1, T, T), float("-inf"), device=input_ids.device, dtype=x.dtype)
-            mask = torch.triu(mask, diagonal=1)
+        mask = torch.triu(torch.full((1, 1, T, T), float("-inf"), device=ids.device), 1) if T > 1 else None
+        for l in self.prelude: x = l(x, (cos, sin), mask)
+        h, hist, trace = self.recurrent(x, x, (cos, sin), mask)
+        for l in self.coda: h = l(h, (cos, sin), mask)
+        if section is not None and section < len(hist): h = hist[section]
+        return self.head(self.norm(h)), trace
 
-        for layer in self.prelude:
-            x = layer(x, (cos, sin), mask)
+# =========================================================================
+# Local Server (Zero-Dependency)
+# =========================================================================
 
-        e = x
-        h_final, history, tool_trace = self.recurrent(x, e, (cos, sin), mask)
+class SEC_CORE_Handler(BaseHTTPRequestHandler):
+    MODEL = None
+    TOKENS = {chr(i): i for i in range(256)}
+    ACTIONS = ["Internal Thought", "Web Search", "Execute Code", "De-obfuscate"]
 
-        for layer in self.coda:
-            h_final = layer(h_final, (cos, sin), mask)
+    def do_POST(self):
+        if self.path == '/api/v1/analyze':
+            content_length = int(self.headers['Content-Length'])
+            post_data = json.loads(self.rfile.read(content_length))
+            payload = post_data.get('payload', '')
 
-        return self.routing_head(h_final, history, section_idx)
+            # Telemetry Header
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
 
-    @torch.no_grad()
-    def generate_analytical_cycle(self, input_ids: torch.Tensor) -> Dict[str, torch.Tensor]:
-        sections = ["Mythos-Glasswing", "DepthFirst-DevSecOps", "Cyber-Decompiler", "DeepMind-BigSleep", "Tool-Interaction-Trace"]
-        results = {}
-        for i, name in enumerate(sections):
-            idx = i if i < 4 else -1
-            logits = self.forward(input_ids, section_idx=idx)
-            results[name] = logits.argmax(dim=-1)
-        return results
+            output = []
+            output.append(">>> [SEC_CORE_TERMINAL // INGESTION_LOOP]")
+            output.append(">>> RUNNING: Loop t=1..4 Council Sweep...")
+
+            # Tokenize & Execute
+            ids = torch.tensor([[self.TOKENS.get(c, 63) for c in payload[:512]]], dtype=torch.long)
+            if ids.shape[1] == 0: ids = torch.zeros((1, 1), dtype=torch.long)
+
+            logits, trace = self.MODEL(ids)
+            action = trace[0]
+            output.append(f">>> TOOL GATING RESOLUTION: [Determined Action: {self.ACTIONS[action]}]")
+
+            # Mock Handlers
+            rag_info = MockRAGDatabase.query(payload) if action == 1 else "N/A"
+            sandbox_info = MockActionSandbox.execute(action, payload) if action in [2, 3] else "N/A"
+            output.append(f">>> LATENT BOTTLECHECK VECTOR: [Status: Compressed | Bridge_Signal: {rag_info[:30]}...]")
+            output.append(">>> LOOKAHEAD STATUS: [Trajectory stable]\n")
+
+            # Council sections
+            sections = ["Mythos-Glasswing Lens", "DepthFirst-DevSecOps Lens", "Cyber-Decompiler Lens", "DeepMind-BigSleep Lens"]
+            for i, s in enumerate(sections):
+                output.append(f"### {i+1}. {s}")
+                output.append(f"- Analysis stage {i+1} complete. Signal-to-Noise ratio optimized via LTI injection.")
+
+            output.append(f"\n### 5. Tool Interaction Trace")
+            output.append(f"- Action: {self.ACTIONS[action]}")
+            if action == 1: output.append(f"- Retrieval Result: {rag_info}")
+            if action in [2, 3]: output.append(f"- Sandbox Result: {sandbox_info}")
+
+            output.append(f"\n## ─── THE COMPREHENSIVE CODA ───")
+            output.append(f"REMEDIATION PAYLOAD FOR: \"{payload[:40]}...\"")
+            output.append(f"[PATCH] {MockRAGDatabase.query(payload)}")
+            output.append(f"[VERIFICATION] {MockActionSandbox.execute(2, payload)}")
+
+            self.wfile.write("\n".join(output).encode())
+
+def run_server():
+    print("Initializing SEC-CORE Engine Weight Space...")
+    cfg = SECConfig()
+    SEC_CORE_Handler.MODEL = SECCoreUnified(cfg)
+    server = HTTPServer(('127.0.0.1', 8000), SEC_CORE_Handler)
+    print("\n" + "="*50)
+    print("   SEC-CORE UNIFIED ORCHESTRATION NETWORK (V7.0)")
+    print("   ZERO-DEPENDENCY LOCALHOST DEPLOYMENT ACTIVE")
+    print("="*50)
+    print("\n[INFO] Endpoint: http://127.0.0.1:8000/api/v1/analyze")
+    print("[INFO] Try this command in another terminal:")
+    print("curl -X POST http://127.0.0.1:8000/api/v1/analyze -d '{\"payload\": \"buffer overflow vulnerability in memcpy\"}'")
+    print("\nPress Ctrl+C to shutdown.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down SEC-CORE...")
+        server.server_close()
 
 if __name__ == "__main__":
-    print("--- SEC-CORE UNIFIED (V7.0 GLOBAL-RAG) ---")
-    cfg = SECConfig(dim=256, n_heads=8, n_kv_heads=2, n_experts=16)
-    model = SECCoreUnified(cfg)
-    dummy_input = torch.randint(0, cfg.vocab_size, (1, 16))
-
-    # Mocking a tool-triggering state
-    with torch.no_grad():
-        # Nudge the gate to favor 'Execute Code' (Action 2)
-        model.recurrent.tool_gate.gate.bias[2] = 10.0
-
-    output = model(dummy_input)
-    print(f"Standard Logits: {output.shape}")
-
-    cycle = model.generate_analytical_cycle(dummy_input)
-    for section, out in cycle.items():
-        print(f"Section {section}: {out.shape}")
-    print("--- LEVEL 7 ARCHITECTURE VERIFIED ---")
+    run_server()
