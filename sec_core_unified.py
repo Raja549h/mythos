@@ -1,8 +1,8 @@
 """
-DAILY MYTHOS UNIFIED ORCHESTRATION NETWORK (V7.0-PROPER)
+SEC-CORE UNIFIED ORCHESTRATION NETWORK (V7.0-PROPER)
 ------------------------------------------------------
 Standalone Deployment Script with Integrated Dashboard.
-Branded for: daily-mythos.com
+Branded for: SEC-CORE Unified
 
 Architecture: Recurrent-Depth Transformer (RDT) with Level 7 RAG & Tool Matrix.
 """
@@ -221,7 +221,7 @@ class Intelligence:
 # =========================================================================
 
 HTML = """
-<!DOCTYPE html><html><head><title>Daily Mythos | SEC-CORE</title>
+<!DOCTYPE html><html><head><title>SEC-CORE Terminal | SEC-CORE</title>
 <style>
 body { background:#0a0a0a; color:#0f6; font-family:monospace; padding:20px; }
 .container { max-width:850px; margin:auto; border:1px solid #222; padding:30px; box-shadow:0 0 15px rgba(0,255,102,0.1); }
@@ -232,7 +232,7 @@ button:hover { background:#fff; box-shadow:0 0 10px #0f6; }
 #res { background:#161616; padding:20px; display:none; border-left:3px solid #0f6; white-space:pre-wrap; }
 </style></head>
 <body><div class="container">
-<h1>DAILY-MYTHOS.COM // SEC-CORE V7.0</h1>
+<h1>SEC-CORE UNIFIED // SEC-CORE V7.0</h1>
 <textarea id="inp" placeholder="Drop payload signature..."></textarea>
 <button onclick="run()">INITIATE COUNCIL SWEEP</button>
 <div id="res"></div>
@@ -275,7 +275,7 @@ def run():
     Handler.MODEL = SECCoreUnified(cfg)
     server = HTTPServer(('0.0.0.0', 3000), Handler)
     print("="*50)
-    print("   DAILY-MYTHOS.COM // SEC-CORE V7.0 PROPER")
+    print("   SEC-CORE UNIFIED // SEC-CORE V7.0 PROPER")
     print("   ZERO-DEPENDENCY STANDALONE SERVER ACTIVE")
     print("="*50)
     print("\n[DASHBOARD] http://localhost:3000/")

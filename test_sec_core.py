@@ -51,7 +51,7 @@ if __name__ == "__main__":
     try:
         test_standalone_model()
         test_server_and_model_link()
-        print("\n--- DAILY MYTHOS VALIDATION SUITE PASSED ---")
+        print("\n--- SEC-CORE VALIDATION SUITE PASSED ---")
     except Exception as e:
         print(f"\n--- VALIDATION FAILED: {e} ---")
         import traceback
