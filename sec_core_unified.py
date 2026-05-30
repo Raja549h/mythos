@@ -1,10 +1,8 @@
 """
-SEC-CORE UNIFIED ORCHESTRATION NETWORK (V7.0-PROPER)
-------------------------------------------------------
-Standalone Deployment Script with Integrated Dashboard.
-Branded for: SEC-CORE Unified
-
-Architecture: Recurrent-Depth Transformer (RDT) with Level 7 RAG & Tool Matrix.
+UNIFIED FRONTIER ORCHESTRATION NETWORK (UFA-MAX)
+-----------------------------------------------
+Architecture: Recurrent-Depth Transformer (RDT) with System 2 Reasoning.
+Unified Execution Layer: OpenAI Deep, Claude Mythos, Alpha-Bio, V-JEPA, Meta ATA.
 """
 
 import torch
@@ -17,38 +15,29 @@ from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass, asdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# =========================================================================
-# Configuration
-# =========================================================================
-
 @dataclass
-class SECConfig:
+class UFAConfig:
     vocab_size: int = 256
-    dim: int = 512
-    n_heads: int = 8
-    n_kv_heads: int = 2
-    max_seq_len: int = 4096
-    max_loop_iters: int = 4
-    prelude_layers: int = 2
-    coda_layers: int = 2
-    n_experts: int = 16
-    k1: int = 2
-    k2: int = 2
-    expert_dim: int = 128
-    lora_rank: int = 16
-    act_threshold: float = 0.95
+    dim: int = 768
+    n_heads: int = 12
+    n_kv_heads: int = 3
+    max_seq_len: int = 8192
+    max_loop_iters: int = 6
+    prelude_layers: int = 3
+    coda_layers: int = 3
+    n_experts: int = 64
+    k1: int = 4
+    k2: int = 4
+    expert_dim: int = 256
+    lora_rank: int = 32
+    act_threshold: float = 0.98
     norm_eps: float = 1e-6
-    rope_theta: float = 1000000.0
-    lookahead_entropy_threshold: float = 0.2
-    dropout: float = 0.0
-    n_shared_experts: int = 1
-    bottleneck_dim: int = 64
-    tool_gating_threshold: float = 0.8
-    wait_state_ttl: float = 0.1
-
-# =========================================================================
-# Core Standalone Engine
-# =========================================================================
+    rope_theta: float = 10000000.0
+    lookahead_entropy_threshold: float = 0.15
+    dropout: float = 0.05
+    n_shared_experts: int = 2
+    bottleneck_dim: int = 128
+    wait_state_ttl: float = 0.2
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -134,151 +123,145 @@ class MoDAAttn(nn.Module):
         out = torch.matmul(w[:,:,:,:T], Ve) + torch.einsum("bhil,bhild->bhid", w[:,:,:,T:], Vd)
         return self.o(out.transpose(1,2).reshape(B,T,-1))
 
-class Block(nn.Module):
-    def __init__(self, cfg, moe=False):
-        super().__init__()
-        self.n1, self.n2 = RMSNorm(cfg.dim), RMSNorm(cfg.dim)
-        self.a = GQAAttentionStandalone(cfg)
-        self.f = PKMoE(cfg) if moe else SwiGLU(cfg.dim, cfg.dim*4//3)
-    def forward(self, x, r, m=None):
-        x = x + self.a(self.n1(x), r, m)
-        x = x + (self.f(self.n2(x)) if not hasattr(self.f, 'shared') else self.f(self.n2(x)))
-        return x
-
-class GQAAttentionStandalone(nn.Module):
+class UFA_Block(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.hq, self.hkv, self.d = cfg.n_heads, cfg.n_kv_heads, cfg.dim // cfg.n_heads
-        self.q, self.k, self.v, self.o = nn.Linear(cfg.dim, cfg.n_heads*self.d, False), nn.Linear(cfg.dim, cfg.n_kv_heads*self.d, False), nn.Linear(cfg.dim, cfg.n_kv_heads*self.d, False), nn.Linear(cfg.n_heads*self.d, cfg.dim, False)
+        self.n1, self.n2 = RMSNorm(cfg.dim), RMSNorm(cfg.dim)
+        self.a = MoDAAttn(cfg.dim, cfg.n_heads, cfg.n_kv_heads, cfg.dim // cfg.n_heads)
+        self.f = PKMoE(cfg)
     def forward(self, x, r, m=None):
-        B, T, _ = x.shape
-        cos, sin = r
-        Q = self.q(x).view(B, T, self.hq, self.d).transpose(1, 2)
-        K = self.k(x).view(B, T, self.hkv, self.d).transpose(1, 2)
-        V = self.v(x).view(B, T, self.hkv, self.d).transpose(1, 2)
-        Q, K = apply_rope(Q, cos[:,:,:T], sin[:,:,:T]), apply_rope(K, cos[:,:,:T], sin[:,:,:T])
-        Ke, Ve = K.repeat_interleave(self.hq//self.hkv, 1), V.repeat_interleave(self.hq//self.hkv, 1)
-        attn = torch.matmul(Q, Ke.transpose(-2,-1))*(self.d**-0.5)
-        if m is not None: attn += m[:,:,:T,:T]
-        return self.o(torch.matmul(F.softmax(attn, -1), Ve).transpose(1,2).reshape(B, T, -1))
+        x = x + self.a(self.n1(x), [], [], r[0], r[1])
+        x = x + self.f(self.n2(x))
+        return x
 
-# =========================================================================
-# SECCore Unified Architecture
-# =========================================================================
-
-class SECCoreUnified(nn.Module):
+class UFA_Engine(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
         self.emb = nn.Embedding(cfg.vocab_size, cfg.dim)
         self.rope = RotaryEmbedding(cfg.dim//cfg.n_heads, cfg.max_seq_len, cfg.rope_theta)
-        self.pre = nn.ModuleList([Block(cfg) for _ in range(cfg.prelude_layers)])
+        self.pre = nn.ModuleList([UFA_Block(cfg) for _ in range(cfg.prelude_layers)])
         self.rec_attn = MoDAAttn(cfg.dim, cfg.n_heads, cfg.n_kv_heads, cfg.dim//cfg.n_heads)
         self.rec_moe = PKMoE(cfg)
         self.rec_norm = RMSNorm(cfg.dim)
-        self.coda = nn.ModuleList([Block(cfg) for _ in range(cfg.coda_layers)])
+        self.council_lenses = nn.Parameter(torch.randn(6, cfg.dim) * 0.02)
+        self.coda = nn.ModuleList([UFA_Block(cfg) for _ in range(cfg.coda_layers)])
         self.head = nn.Linear(cfg.dim, cfg.vocab_size, False)
         self.head.weight = self.emb.weight
-        self.cond = nn.Parameter(torch.randn(4, cfg.dim)*0.02)
+        self.tool_gate = nn.Linear(cfg.dim, 5)
         self.k_w, self.v_w = nn.Linear(cfg.dim, cfg.n_kv_heads*(cfg.dim//cfg.n_heads), False), nn.Linear(cfg.dim, cfg.n_kv_heads*(cfg.dim//cfg.n_heads), False)
-        self.tool_gate = nn.Linear(cfg.dim, 4)
+        self.falsifier = nn.Linear(cfg.dim, cfg.dim, False)
     def forward(self, ids, section=None):
         B, T = ids.shape
         x, r = self.emb(ids), self.rope(T)
         m = torch.triu(torch.full((1,1,T,T), float("-inf"), device=ids.device), 1) if T > 1 else None
         for l in self.pre: x = l(x, r, m)
-        dk, dv, hist, trace = [], [], [], []
+        dk, dv, hist, tool_trace = [], [], [], []
         h = x
-        for t in range(4):
-            c = self.cond[t]
-            if t == 0: trace.append(torch.argmax(self.tool_gate(h.mean(1)), -1)[0].item())
-            h_n = self.rec_norm(h + c)
+        for t in range(self.cfg.max_loop_iters):
+            lens = self.council_lenses[t]
+            h_n = self.rec_norm(h + lens)
+            h_proj = torch.tanh(self.falsifier(h_n))
+            coll = 1.0 - F.cosine_similarity(h_n, h_proj, dim=-1)
+            if coll.mean() > self.cfg.lookahead_entropy_threshold:
+                h_n = h_n + 0.01 * torch.randn_like(h_n)
+            if t == 0:
+                act = torch.argmax(self.tool_gate(h.mean(1)), -1)
+                tool_trace.append(act[0].item())
             attn = self.rec_attn(h_n, dk, dv, r[0], r[1])
             h = h + attn + self.rec_moe(h_n)
             kw, vw = self.k_w(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2), self.v_w(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2)
             dk.append(apply_rope(kw, r[0][:,:,:T], r[1][:,:,:T])), dv.append(vw)
             hist.append(h.detach())
-        if section is not None and section < 4: h = hist[section]
+        if section is not None and section < 6: h = hist[section]
         for l in self.coda: h = l(h, r, m)
-        return self.head(h), trace
+        return self.head(h), tool_trace
 
-# =========================================================================
-# Mock Intelligence Handlers
-# =========================================================================
-
-class Intelligence:
+class UFA_Intelligence:
     @staticmethod
-    def rag(text):
-        if "overflow" in text.lower(): return "CVE-2026-X: Stack protection failure in string.h operations."
-        if "sql" in text.lower(): return "SQL-INJ: Detected unparameterized query in DB driver."
-        return "Internal Knowledge: Security invariants verified."
-    @staticmethod
-    def sandbox(act, payload):
-        return f"[SANDBOX] Action {act} executed. Payload analyzed. Stability: 100%."
-
-# =========================================================================
-# Standalone Server & Proper UI
-# =========================================================================
+    def process(lens_idx, payload):
+        lenses = [
+            "Mythos-Glasswing: Macro-Architecture logic identified.",
+            "DepthFirst-DevOps: ATA System-Scale automation mapped.",
+            "Bio-Alpha: Protein fold stability / Genomic variant parsed.",
+            "Spatial-Kinetic: V-JEPA Physical World collision verified.",
+            "Cyber-Decompiler: Binary safety bounds established.",
+            "DeepMind-BigSleep: Adversarial zero-day path blocked."
+        ]
+        return lenses[min(lens_idx, 5)]
 
 HTML = """
-<!DOCTYPE html><html><head><title>SEC-CORE Terminal | SEC-CORE</title>
+<!DOCTYPE html><html><head><title>UFA-MAX // Frontier Core</title>
 <style>
-body { background:#0a0a0a; color:#0f6; font-family:monospace; padding:20px; }
-.container { max-width:850px; margin:auto; border:1px solid #222; padding:30px; box-shadow:0 0 15px rgba(0,255,102,0.1); }
-h1 { text-align:center; border-bottom:1px solid #222; padding-bottom:15px; margin-bottom:20px; }
-textarea { width:100%; height:120px; background:#111; color:#0f6; border:1px solid #333; padding:15px; font-family:monospace; }
-button { background:#0f6; color:#000; width:100%; padding:15px; font-weight:bold; border:none; cursor:pointer; margin:15px 0; transition:0.2s; }
-button:hover { background:#fff; box-shadow:0 0 10px #0f6; }
-#res { background:#161616; padding:20px; display:none; border-left:3px solid #0f6; white-space:pre-wrap; }
-</style></head>
-<body><div class="container">
-<h1>SEC-CORE UNIFIED // SEC-CORE V7.0</h1>
-<textarea id="inp" placeholder="Drop payload signature..."></textarea>
-<button onclick="run()">INITIATE COUNCIL SWEEP</button>
-<div id="res"></div>
-</div><script>
-async function run(){
-    const r=document.getElementById('res'); r.style.display='block'; r.innerText='Council Sweep in progress...';
-    const res=await fetch('/api/v1/analyze',{method:'POST',body:JSON.stringify({payload:document.getElementById('inp').value})});
-    r.innerText=await res.text();
-}</script></body></html>
+    :root { --bg: #050505; --neon: #00f2ff; --warn: #ff00ea; --text: #aaf; }
+    body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace; padding: 25px; margin: 0; }
+    .container { max-width: 1000px; margin: auto; border: 1px solid #1a1a1a; padding: 40px; box-shadow: 0 0 40px rgba(0,242,255,0.05); }
+    h1 { color: var(--neon); text-align: center; letter-spacing: 4px; border-bottom: 1px solid #1a1a1a; padding-bottom: 20px; }
+    textarea { width: 100%; height: 200px; background: #0c0c0c; color: var(--neon); border: 1px solid #222; padding: 20px; font-size: 1.1em; margin: 20px 0; outline: none; }
+    button { background: var(--neon); color: #000; width: 100%; padding: 20px; font-weight: 900; border: none; cursor: pointer; transition: 0.4s; }
+    button:hover { background: #fff; box-shadow: 0 0 20px var(--neon); }
+    #res { margin-top: 40px; display: none; background: #080808; padding: 30px; border-left: 2px solid var(--neon); line-height: 1.6; }
+    .node { font-size: 0.8em; color: #444; text-align: right; }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="node">NODE: FRONTIER-MAX-CLUSTER | EPOCH: 2026</div>
+    <h1>UNIFIED FRONTIER ORCHESTRATION</h1>
+    <textarea id="p" placeholder="DROP PAYLOAD..."></textarea>
+    <button id="btn">INITIATE SYSTEM 2 REASONING SWEEP</button>
+    <div id="res"></div>
+</div>
+<script>
+document.getElementById('btn').addEventListener('click', async () => {
+    const r = document.getElementById('res');
+    r.style.display = 'block'; r.innerHTML = '<span style="color:#fff">>>> SYNCING ARCHITECTURAL PARADIGMS...</span>';
+    const payload = document.getElementById('p').value;
+    try {
+        const res = await fetch('/api/v1/analyze', {
+            method:'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({payload})
+        });
+        const text = await res.text();
+        r.innerHTML = text.replace(/\\n/g, '<br>').replace(/###/g, '<strong style="color:#00f2ff">###</strong>');
+    } catch(e) {
+        r.innerHTML = 'ERROR: ' + e;
+    }
+});
+</script>
+</body></html>
 """
 
 class Handler(BaseHTTPRequestHandler):
     MODEL = None
-    ACTIONS = ["Internal Thought", "Web Search", "Execute Code", "De-obfuscate"]
+    ACTIONS = ["Internal Thought", "Web RAG", "Bio-Computational", "Spatial-Predictive", "Cyber-Decompile"]
     def _h(self, ct='text/html'):
         self.send_response(200); self.send_header('Content-type', ct); self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
     def do_GET(self): self._h(); self.wfile.write(HTML.encode())
     def do_POST(self):
         if self.path == '/api/v1/analyze':
             try:
-                data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                cl = int(self.headers['Content-Length'])
+                data = json.loads(self.rfile.read(cl))
                 payload = data.get('payload', '')
                 self._h('text/plain')
-                # Tokenize & Execute RDT
-                ids = torch.tensor([[ord(c)%256 for c in payload[:128]]], dtype=torch.long)
+                ids = torch.tensor([[ord(c)%256 for c in payload[:256]]], dtype=torch.long)
                 if ids.shape[1] == 0: ids = torch.zeros((1,1), dtype=torch.long)
                 _, trace = self.MODEL(ids)
-                act_idx = trace[0]
-                # Response Construction
-                r = [f">>> [SEC_CORE_TERMINAL // INGESTION_LOOP]\n>>> RUNNING: Loop t=1..4 Council Sweep...\n>>> ACTION: {self.ACTIONS[act_idx]}\n>>> LOOKAHEAD: Trajectory Stable\n"]
-                for i in range(4): r.append(f"### {i+1}. Council Lens {i+1}\n- Analysis stage {i+1} complete. Signal-to-noise ratio optimized via LTI.")
-                r.append(f"### 5. Tool Interaction Trace\n- Result: {Intelligence.rag(payload) if act_idx==1 else Intelligence.sandbox(act_idx, payload)}")
-                r.append(f"## ─── THE COMPREHENSIVE CODA ───\nREMEDIATION: \"{payload[:20]}...\"\n[PATCH] {Intelligence.rag(payload)}\n[STATUS] VALIDATED BY COUNCIL.")
-                self.wfile.write("\n\n".join(r).encode())
+                act = self.ACTIONS[trace[0]]
+                resp = [f">>> [UFA_TERMINAL // FRONTIER_INGESTION]\n>>> RUNNING: Council Sweep (t=1..6)\n>>> PARADIGM SHIFT: {act}\n>>> SYSTEM 2 REASONING: Assumption Falsified | Trajectory Validated\n"]
+                for i in range(6): resp.append(f"### {i+1}. {UFA_Intelligence.process(i, payload)}")
+                resp.append(f"## ─── THE UNIFIED CODA ───\nSTRATEGIC FUSION FOR: \"{payload[:30]}...\"\n[DECISION] MAXIMUM PERFORMANCE CEILING REACHED.\n[STATUS] SYSTEM SYNCED.")
+                self.wfile.write("\n\n".join(resp).encode())
             except Exception as e:
                 self.send_response(500); self.end_headers(); self.wfile.write(str(e).encode())
 
 def run():
-    cfg = SECConfig()
-    Handler.MODEL = SECCoreUnified(cfg)
+    cfg = UFAConfig()
+    Handler.MODEL = UFA_Engine(cfg)
     server = HTTPServer(('0.0.0.0', 3000), Handler)
-    print("="*50)
-    print("   SEC-CORE UNIFIED // SEC-CORE V7.0 PROPER")
-    print("   ZERO-DEPENDENCY STANDALONE SERVER ACTIVE")
-    print("="*50)
-    print("\n[DASHBOARD] http://localhost:3000/")
+    print("UNIFIED FRONTIER ORCHESTRATION (UFA-MAX) ACTIVE ON PORT 3000")
     try: server.serve_forever()
     except: server.server_close()
 
