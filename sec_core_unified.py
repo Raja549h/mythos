@@ -3,6 +3,7 @@ UNIFIED FRONTIER ORCHESTRATION NETWORK (UFA-MAX)
 -----------------------------------------------
 Architecture: Recurrent-Depth Transformer (RDT) with System 2 Reasoning.
 Unified Execution Layer: OpenAI Deep, Claude Mythos, Alpha-Bio, V-JEPA, Meta ATA.
+Deployment: Hugging Face Spaces Optimized (Port 7860)
 """
 
 import torch
@@ -11,6 +12,7 @@ import torch.nn.functional as F
 import math
 import json
 import time
+import os
 from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass, asdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -191,78 +193,330 @@ class UFA_Intelligence:
         return lenses[min(lens_idx, 5)]
 
 HTML = """
-<!DOCTYPE html><html><head><title>UFA-MAX // Frontier Core</title>
-<style>
-    :root { --bg: #050505; --neon: #00f2ff; --warn: #ff00ea; --text: #aaf; }
-    body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace; padding: 25px; margin: 0; }
-    .container { max-width: 1000px; margin: auto; border: 1px solid #1a1a1a; padding: 40px; box-shadow: 0 0 40px rgba(0,242,255,0.05); }
-    h1 { color: var(--neon); text-align: center; letter-spacing: 4px; border-bottom: 1px solid #1a1a1a; padding-bottom: 20px; }
-    textarea { width: 100%; height: 200px; background: #0c0c0c; color: var(--neon); border: 1px solid #222; padding: 20px; font-size: 1.1em; margin: 20px 0; outline: none; }
-    button { background: var(--neon); color: #000; width: 100%; padding: 20px; font-weight: 900; border: none; cursor: pointer; transition: 0.4s; }
-    button:hover { background: #fff; box-shadow: 0 0 20px var(--neon); }
-    #res { margin-top: 40px; display: none; background: #080808; padding: 30px; border-left: 2px solid var(--neon); line-height: 1.6; }
-    .node { font-size: 0.8em; color: #444; text-align: right; }
-</style>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEC-CORE // UFA-MAX</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Inter:wght@400;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #030305;
+            --surface: rgba(15, 15, 25, 0.7);
+            --neon: #00f2ff;
+            --neon-dim: rgba(0, 242, 255, 0.3);
+            --accent: #ff00ea;
+            --text: #c0c0d0;
+            --text-bright: #ffffff;
+            --border: rgba(255, 255, 255, 0.05);
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            background-color: var(--bg);
+            background-image:
+                radial-gradient(circle at 50% 50%, rgba(0, 242, 255, 0.03) 0%, transparent 70%),
+                linear-gradient(rgba(18, 18, 20, 1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(18, 18, 20, 1) 1px, transparent 1px);
+            background-size: 100% 100%, 40px 40px, 40px 40px;
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .app-container {
+            width: 100%;
+            max-width: 1100px;
+            background: var(--surface);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 50px;
+            box-shadow: 0 40px 100px rgba(0, 0, 0, 0.8), 0 0 20px rgba(0, 242, 255, 0.05);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .app-container::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon), transparent);
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .node-tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            letter-spacing: 2px;
+            color: var(--neon);
+            opacity: 0.6;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        h1 {
+            font-size: 42px;
+            font-weight: 900;
+            letter-spacing: -1px;
+            margin: 0;
+            color: var(--text-bright);
+            text-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 30px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 180px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 25px;
+            color: var(--text-bright);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 16px;
+            line-height: 1.6;
+            outline: none;
+            transition: all 0.3s ease;
+            resize: none;
+        }
+
+        textarea:focus {
+            border-color: var(--neon-dim);
+            box-shadow: 0 0 30px rgba(0, 242, 255, 0.05);
+        }
+
+        button {
+            width: 100%;
+            padding: 20px;
+            border-radius: 16px;
+            border: none;
+            background: var(--neon);
+            color: #000;
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px rgba(0, 242, 255, 0.4);
+            background: #fff;
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        #res {
+            margin-top: 40px;
+            display: none;
+            padding: 35px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 16px;
+            border-left: 4px solid var(--neon);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            line-height: 1.8;
+            color: var(--text);
+            animation: slideIn 0.5s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .status-line { color: var(--neon); margin-bottom: 20px; font-weight: bold; }
+        .expert-line { margin-bottom: 10px; display: flex; align-items: flex-start; }
+        .expert-line strong { color: var(--neon); margin-right: 10px; min-width: 50px; }
+
+        .coda-box {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+        .coda-title { color: var(--accent); font-weight: bold; margin-bottom: 10px; }
+
+        /* Loader */
+        .loader {
+            display: none;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        .dot {
+            width: 8px; height: 8px; background: var(--neon);
+            border-radius: 50%; margin: 0 5px;
+            animation: pulse 1.5s infinite;
+        }
+        .dot:nth-child(2) { animation-delay: 0.2s; }
+        .dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+    </style>
 </head>
 <body>
-<div class="container">
-    <div class="node">NODE: FRONTIER-MAX-CLUSTER | EPOCH: 2026</div>
-    <h1>UNIFIED FRONTIER ORCHESTRATION</h1>
-    <textarea id="p" placeholder="DROP PAYLOAD..."></textarea>
-    <button id="btn">INITIATE SYSTEM 2 REASONING SWEEP</button>
-    <div id="res"></div>
-</div>
-<script>
-document.getElementById('btn').addEventListener('click', async () => {
-    const r = document.getElementById('res');
-    r.style.display = 'block'; r.innerHTML = '<span style="color:#fff">>>> SYNCING ARCHITECTURAL PARADIGMS...</span>';
-    const payload = document.getElementById('p').value;
-    try {
-        const res = await fetch('/api/v1/analyze', {
-            method:'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({payload})
+    <div class="app-container">
+        <header>
+            <span class="node-tag">SEC-CORE // UFA-MAX // FRONTIER-V7</span>
+            <h1>Unified Frontier Orchestration</h1>
+        </header>
+
+        <div class="input-group">
+            <textarea id="p" placeholder="Enter systemic architecture, code, or scientific payload for analysis..."></textarea>
+        </div>
+
+        <button id="btn">Initiate System 2 Sweep</button>
+
+        <div class="loader" id="loader">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+        </div>
+
+        <div id="res"></div>
+    </div>
+
+    <script>
+        const btn = document.getElementById('btn');
+        const resBox = document.getElementById('res');
+        const loader = document.getElementById('loader');
+        const p = document.getElementById('p');
+
+        btn.addEventListener('click', async () => {
+            if (!p.value.trim()) return;
+
+            btn.disabled = true;
+            resBox.style.display = 'none';
+            loader.style.display = 'flex';
+
+            try {
+                const response = await fetch('/api/v1/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ payload: p.value })
+                });
+
+                const data = await response.json();
+
+                loader.style.display = 'none';
+                resBox.style.display = 'block';
+                resBox.innerHTML = '';
+
+                // Simulate sequential analysis
+                const lines = [
+                    { type: 'status', content: data.header },
+                    ...data.experts.map((e, i) => ({ type: 'expert', id: i + 1, content: e })),
+                    { type: 'coda', title: 'STRATEGIC FUSION', content: data.coda }
+                ];
+
+                for (const line of lines) {
+                    const div = document.createElement('div');
+                    if (line.type === 'status') {
+                        div.className = 'status-line';
+                        div.innerHTML = line.content.replace(/\\n/g, '<br>');
+                    } else if (line.type === 'expert') {
+                        div.className = 'expert-line';
+                        div.innerHTML = `<strong>### ${line.id}</strong> <span>${line.content}</span>`;
+                    } else if (line.type === 'coda') {
+                        div.className = 'coda-box';
+                        div.innerHTML = `<div class="coda-title">## ─── ${line.title} ───</div><div>${line.content.replace(/\\n/g, '<br>')}</div>`;
+                    }
+                    resBox.appendChild(div);
+                    await new Promise(r => setTimeout(r, 400));
+                }
+
+            } catch (e) {
+                loader.style.display = 'none';
+                resBox.style.display = 'block';
+                resBox.innerHTML = '<span style="color:var(--accent)">CRITICAL ERROR: Connection to Orchestrator Lost.</span>';
+            } finally {
+                btn.disabled = false;
+            }
         });
-        const text = await res.text();
-        r.innerHTML = text.replace(/\\n/g, '<br>').replace(/###/g, '<strong style="color:#00f2ff">###</strong>');
-    } catch(e) {
-        r.innerHTML = 'ERROR: ' + e;
-    }
-});
-</script>
-</body></html>
+    </script>
+</body>
+</html>
 """
 
 class Handler(BaseHTTPRequestHandler):
     MODEL = None
     ACTIONS = ["Internal Thought", "Web RAG", "Bio-Computational", "Spatial-Predictive", "Cyber-Decompile"]
+
     def _h(self, ct='text/html'):
-        self.send_response(200); self.send_header('Content-type', ct); self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
-    def do_GET(self): self._h(); self.wfile.write(HTML.encode())
+        self.send_response(200)
+        self.send_header('Content-type', ct)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+
+    def do_GET(self):
+        self._h()
+        self.wfile.write(HTML.encode())
+
     def do_POST(self):
         if self.path == '/api/v1/analyze':
             try:
                 cl = int(self.headers['Content-Length'])
                 data = json.loads(self.rfile.read(cl))
                 payload = data.get('payload', '')
-                self._h('text/plain')
+
+                self._h('application/json')
+
                 ids = torch.tensor([[ord(c)%256 for c in payload[:256]]], dtype=torch.long)
                 if ids.shape[1] == 0: ids = torch.zeros((1,1), dtype=torch.long)
+
                 _, trace = self.MODEL(ids)
                 act = self.ACTIONS[trace[0]]
-                resp = [f">>> [UFA_TERMINAL // FRONTIER_INGESTION]\n>>> RUNNING: Council Sweep (t=1..6)\n>>> PARADIGM SHIFT: {act}\n>>> SYSTEM 2 REASONING: Assumption Falsified | Trajectory Validated\n"]
-                for i in range(6): resp.append(f"### {i+1}. {UFA_Intelligence.process(i, payload)}")
-                resp.append(f"## ─── THE UNIFIED CODA ───\nSTRATEGIC FUSION FOR: \"{payload[:30]}...\"\n[DECISION] MAXIMUM PERFORMANCE CEILING REACHED.\n[STATUS] SYSTEM SYNCED.")
-                self.wfile.write("\n\n".join(resp).encode())
+
+                header = f">>> [UFA_TERMINAL // FRONTIER_INGESTION]\n>>> RUNNING: Council Sweep (t=1..6)\n>>> PARADIGM SHIFT: {act}\n>>> SYSTEM 2 REASONING: Assumption Falsified | Trajectory Validated"
+
+                experts = [UFA_Intelligence.process(i, payload) for i in range(6)]
+
+                coda = f"STRATEGIC FUSION FOR: \"{payload[:30]}...\"\n[DECISION] MAXIMUM PERFORMANCE CEILING REACHED.\n[STATUS] SYSTEM SYNCED."
+
+                resp = {
+                    "header": header,
+                    "experts": experts,
+                    "coda": coda
+                }
+
+                self.wfile.write(json.dumps(resp).encode())
             except Exception as e:
-                self.send_response(500); self.end_headers(); self.wfile.write(str(e).encode())
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
 
 def run():
     cfg = UFAConfig()
     Handler.MODEL = UFA_Engine(cfg)
-    server = HTTPServer(('0.0.0.0', 3000), Handler)
-    print("UNIFIED FRONTIER ORCHESTRATION (UFA-MAX) ACTIVE ON PORT 3000")
-    try: server.serve_forever()
-    except: server.server_close()
+    # Hugging Face Spaces port is usually 7860
+    port = int(os.environ.get("PORT", 7860))
+    server = HTTPServer(('0.0.0.0', port), Handler)
+    print(f"UNIFIED FRONTIER ORCHESTRATION (UFA-MAX) ACTIVE ON PORT {port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.server_close()
 
-if __name__ == "__main__": run()
+if __name__ == "__main__":
+    run()
