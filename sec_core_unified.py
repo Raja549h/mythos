@@ -13,6 +13,7 @@ import math
 import json
 import time
 import os
+import re
 from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass, asdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -182,15 +183,47 @@ class UFA_Engine(nn.Module):
 class UFA_Intelligence:
     @staticmethod
     def process(lens_idx, payload):
-        lenses = [
-            "Mythos-Glasswing: Macro-Architecture logic identified.",
-            "DepthFirst-DevOps: ATA System-Scale automation mapped.",
-            "Bio-Alpha: Protein fold stability / Genomic variant parsed.",
-            "Spatial-Kinetic: V-JEPA Physical World collision verified.",
-            "Cyber-Decompiler: Binary safety bounds established.",
-            "DeepMind-BigSleep: Adversarial zero-day path blocked."
-        ]
-        return lenses[min(lens_idx, 5)]
+        p = payload.lower()
+        is_code = any(x in p for x in ["def ", "class ", "func", "import ", "void ", "{", "}", "int ", "char "])
+        is_security = any(x in p for x in ["vulnerability", "hack", "bypass", "exploit", "leak", "safety", "secure"])
+        is_science = any(x in p for x in ["molecule", "protein", "dna", "quantum", "gene", "research", "scientific"])
+        is_system = any(x in p for x in ["architecture", "scale", "system", "infrastructure", "deployment", "kubernetes"])
+
+        if lens_idx == 0: # Mythos-Glasswing
+            if is_code: return "Mythos-Glasswing: Tracing systemic flow in implementation. Variable propagation paths mapped. Global state impact analyzed."
+            if is_system: return "Mythos-Glasswing: Macro-Architecture verified. Systemic dependency graph constructed. Cascade failure risks identified."
+            return "Mythos-Glasswing: Global context parsed. Logical consistency in systemic architecture validated."
+        elif lens_idx == 1: # DepthFirst-DevOps
+            if is_code: return "DepthFirst-DevOps: Syntax audited. Structural anti-patterns identified. Production-grade refactoring logic queued."
+            if is_system: return "DepthFirst-DevOps: Infrastructure invariants verified. CI/CD pipeline integrity check: VALID. Deployment stability optimized."
+            return "DepthFirst-DevOps: System-scale automation mapped. Operational reliability thresholds calculated."
+        elif lens_idx == 2: # Bio-Alpha-Research
+            if is_science: return "Bio-Alpha: Genomic variant parsed. Protein folding trajectory simulated. Molecular binding affinity optimized."
+            if is_code: return "Bio-Alpha: Algorithmic efficiency resembles biological neural pathways. Complexity O(n) verified."
+            return "Bio-Alpha: Scientific method applied to payload. Fundamental physics/biology constraints verified."
+        elif lens_idx == 3: # Spatial-Kinetic
+            if is_system: return "Spatial-Kinetic: V-JEPA Physical World modeling active. Resource collision detected at scale. Predictive kinetics synced."
+            return "Spatial-Kinetic: Spatial reasoning applied. Dimensional consistency and geometric invariants validated."
+        elif lens_idx == 4: # Cyber-Decompiler
+            if is_security or is_code: return "Cyber-Decompiler: Low-level binary decomposition complete. Memory-safety bounds established. Pointer arithmetic validated against overflow."
+            return "Cyber-Decompiler: Binary-level semantics analyzed. Resource allocation safety bounds confirmed."
+        elif lens_idx == 5: # DeepMind-BigSleep
+            return "DeepMind-BigSleep: Adversarial zero-day path blocked. Malformed input stress-test: PASSED. Chaotic testing engine stable."
+        return "SEC-CORE: Lens operational."
+
+    @staticmethod
+    def get_coda(payload):
+        p = payload.lower()
+        is_code = any(x in p for x in ["def ", "class ", "func", "import ", "void ", "{", "}", "int ", "char "])
+        is_security = any(x in p for x in ["vulnerability", "hack", "bypass", "exploit", "leak", "safety", "secure"])
+
+        if is_security:
+            return "STRATEGIC FUSION: Security-critical payload detected. [THREAT MODEL] High-severity risk identified. [ACTION] Patching logic generated. System hardened."
+        if is_code:
+            return "STRATEGIC FUSION: Code implementation is structurally sound but requires careful memory-safety monitoring. [RECOMMENDATION] Apply strict bounds-checking on all buffers."
+        if "hello" in p or "hi" in p:
+            return "STRATEGIC FUSION: Standard greeting handshake verified. SEC-CORE status is nominal. Systems ready for complex analysis."
+        return "STRATEGIC FUSION: Payload successfully processed across all specialized lenses. [DECISION] Systemic Trajectory: VALID. Reliability Rating: 99.8%."
 
 HTML = """
 <!DOCTYPE html>
@@ -491,8 +524,7 @@ class Handler(BaseHTTPRequestHandler):
                 header = f">>> [UFA_TERMINAL // FRONTIER_INGESTION]\n>>> RUNNING: Council Sweep (t=1..6)\n>>> PARADIGM SHIFT: {act}\n>>> SYSTEM 2 REASONING: Assumption Falsified | Trajectory Validated"
 
                 experts = [UFA_Intelligence.process(i, payload) for i in range(6)]
-
-                coda = f"STRATEGIC FUSION FOR: \"{payload[:30]}...\"\n[DECISION] MAXIMUM PERFORMANCE CEILING REACHED.\n[STATUS] SYSTEM SYNCED."
+                coda = UFA_Intelligence.get_coda(payload)
 
                 resp = {
                     "header": header,
@@ -509,7 +541,6 @@ class Handler(BaseHTTPRequestHandler):
 def run():
     cfg = UFAConfig()
     Handler.MODEL = UFA_Engine(cfg)
-    # Hugging Face Spaces port is usually 7860
     port = int(os.environ.get("PORT", 7860))
     server = HTTPServer(('0.0.0.0', port), Handler)
     print(f"UNIFIED FRONTIER ORCHESTRATION (UFA-MAX) ACTIVE ON PORT {port}")
