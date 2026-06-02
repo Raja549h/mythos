@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 
 # Copy application code
 COPY sec_core_unified.py .
+COPY repo_scanner.py .
 
 # Environment variables for HF Spaces
 ENV PORT=7860
