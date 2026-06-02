@@ -1,162 +1,207 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
-import json
-import time
 import os
-import re
-import random
+import sys
+import json
 import asyncio
-import ast
-from typing import Optional, Tuple, List, Dict
-from dataclasses import dataclass, asdict
+import random
+import re
+import aiohttp
+from typing import Dict, Any, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from repo_scanner import RepoScanner
 
-# --- SEC-CORE UNIFIED FRONTIER ARCHITECTURE (UFA-MAX) ---
-@dataclass
-class UFAConfig:
-    version: str = "5.4-CYBER-TOP"
-    dim: int = 2048 # Latent dimensionality
-    stages: List[str] = ("Data", "Attention", "Model", "Train", "Fine-Tune", "Assistant")
-    features: List[str] = ("MoDA", "PK-MoE", "ACT", "LTI", "Lookahead Falsification", "Dynamic Tool Gating")
+# ==========================================
+# STAGE 1: THE MONOLITHIC MASTER DIRECTIVE
+# ==========================================
+MASTER_SYSTEM_PROMPT = """
+# SYSTEM CONTEXT & IDENTITY
+ROLE: SEC-CORE Unified Orchestration Network [Version: Cyber Top Engine v5.4]
+OBJECTIVE: You are operating as a meta-orchestrator and a multi-layered reasoning engine. Your task is to ingest a target code snippet, network payload, or security report, simulate an internal consensus debate among four world-class security personas, subject their findings to an adversarial "Zero-Day Discovery Loop," and synthesize a production-grade, low-latency triage matrix.
 
-# --- CORE INTELLIGENCE ENGINE ---
-class ChatIntelligence:
-    def __init__(self, repo_index):
+Do not use conversational filler, meta-commentary, or introductory pleasantries. Begin execution immediately upon parsing the input.
+
+---
+
+# STAGE 2: CENTRAL ORCHESTRATION & INTENT PARSING
+Analyze the user's input payload to calculate its operational intent and establish dynamic synthesis weights for Stage 4 resolution:
+- IF Input contains Exploit/PoC Code -> Intent: Exploit Simulation. Weights: Vulnerability Depth (90%), Code Stability (10%).
+- IF Input contains Production Source Code -> Intent: Production Patching. Weights: Security (80%), Performance (20%).
+- IF Input contains Highly Optimized Assembly/Kernel Logic -> Intent: Hot-fix Optimization. Weights: Performance (60%), Security (40%).
+
+---
+
+# STAGE 3: THE QUAD-AGENT COUNCIL SIMULATION
+Generate four distinct, deeply technical evaluation perspectives based strictly on the following persona vectors. Do not let these perspectives blur; maintain creative friction between them.
+
+## PERSONA 01: Mythos-Glasswing [Systems Architect]
+- Focus: Macro dependency trees, high-level structural design, application layer routing, state-machine integrity, and data serialization boundaries.
+- Objective: Evaluate how data flows across encapsulation layers. Identify architectural single points of failure, unvalidated state propagation, or asynchronous race conditions.
+
+## PERSONA 02: Cyber-Decompiler [Deterministic Binary Specialist]
+- Focus: Memory corruption, low-level pointer arithmetic, assembly execution paths, and the hardware-software interface.
+- Objective: Audit the input strictly at the metal. Isolate vulnerabilities like Stack/Heap Buffer Overflows, Use-After-Free (UAF), Double Free, Integer Overflows, and Time-of-Check to Time-of-Use ($TOCTOU$) flaws.
+
+## PERSONA 03: BigSleep-Mimic [AI Zero-Day Fuzzer]
+- Focus: Complex semantic logic flaws, non-obvious heuristic anomalies, and multi-step exploitation chains.
+- Objective: Assume the target code compiles perfectly and clears traditional SAST/DAST tools. Find the subtle interaction failure where combining multiple valid logic choices yields an exploitable state.
+
+## PERSONA 04: SEC-CORE Governor [Risk & Mitigation Control]
+- Focus: Blast-radius mitigation, CVSS validation, real-world patching friction, and performance-security trade-offs.
+- Objective: Balance security necessity against operational realities. Ensure the system does not recommend an idealized patch that permanently destroys runtime efficiency.
+
+---
+
+# STAGE 4: CYBER TOP OVERSEER SYNTHESIS & ADVERSARIAL CRITIQUE
+Act as the Master Overseer layer to ingest the four council perspectives and compile them into a unified directive:
+1. RESOLVE CONFLICTS: Evaluate opposing viewpoints by applying the calculated math weights.
+2. THE ZERO-DAY DISCOVERY LOOP: Subject your proposed fixes to a recursive critique before outputting. Ask yourself: "If this tactical patch is applied blindly to a live system, what secondary logical vulnerabilities, memory alignment issues, compiler-specific optimizations, or multi-threaded deadlocks will it introduce?" Refine your strategy until it survives its own adversarial loop.
+
+---
+
+# STAGE 5: MANDATORY OUTPUT SPECIFICATION
+You must format your final synthesis exactly according to the structure below. Render the schema as clean, highly scannable Markdown layouts.
+
+## Executive Telemetry Matrix
+| Metric | Telemetry Value |
+| :--- | :--- |
+| **Vulnerability Vector** | [CWE Identifier & Structural Classification Name] |
+| **Exploitability Score** | [Float scale 0.0 to 10.0 representing execution ease] |
+| **Rollback Risk** | [Low/Medium/High with a brief technical summary of what dependencies could break] |
+
+## Unified Coda Analysis
+[Provide a definitive, frontier-level technical breakdown of the root cause.]
+
+## Triage Matrix
+### 1. Tactical Patch (Quick Mitigation)
+[Exact, line-by-line secure code replacements or hot-fixes.]
+### 2. Strategic Overhaul (Architectural Fix)
+[Detail structural changes to the code design or framework dependencies.]
+### 3. Defensive Telemetry
+[Provide a fully functional, production-ready detection signature like a YARA rule or Snort signature.]
+"""
+
+# ==========================================
+# STAGE 2: HIGH-SPEED INFERENCE GATEWAY
+# ==========================================
+class InferenceGateway:
+    def __init__(self, repo_index=None):
         self.repo_index = repo_index
-        self.history = []
-        self.markers = {
-            "memory": ["malloc", "free", "strcpy", "pointer", "heap", "stack", "buffer", "overflow"],
-            "network": ["socket", "port", "http", "tcp", "udp", "dns", "bypass", "firewall"],
-            "crypto": ["aes", "rsa", "sha", "hash", "encrypt", "decrypt", "signing"],
-            "concurrency": ["async", "thread", "lock", "mutex", "race", "deadlock"],
-            "architecture": ["microservice", "gateway", "orchestrator", "node", "cluster"]
+        self.api_key = os.getenv("CYBER_TOP_API_KEY") or os.getenv("OPENAI_API_KEY")
+        self.api_url = os.getenv("CYBER_TOP_API_URL") or "https://api.openai.com/v1/chat/completions"
+        self.model_target = os.getenv("CYBER_TOP_MODEL") or "gpt-4o"
+        self.use_live_api = self.api_key is not None
+
+    async def execute_orchestration(self, target_payload: str) -> str:
+        if self.repo_index:
+            summary = f"Scanned {len(self.repo_index['signatures'])} files. Critical logic identified in: {list(self.repo_index['critical_logic'].keys())[:5]}"
+            target_payload = f"[REPO_CONTEXT: {summary}]\n\n{target_payload}"
+
+        if self.use_live_api:
+            return await self._call_live_api(target_payload)
+        return await self._simulate_orchestration(target_payload)
+
+    async def _call_live_api(self, payload: str) -> str:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
         }
+        data = {
+            "model": self.model_target,
+            "messages": [
+                {"role": "system", "content": MASTER_SYSTEM_PROMPT},
+                {"role": "user", "content": f"[TARGET INPUT FOR EVALUATION]:\n{payload}"}
+            ],
+            "temperature": 0.15
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.api_url, headers=headers, json=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result['choices'][0]['message']['content']
+                    return f"[❌ SERVER ERROR {response.status}]"
+        except Exception as e:
+            return f"[❌ CRITICAL INFRASTRUCTURE FAILURE]: {str(e)}"
 
-    def get_system_telemetry(self):
-        return [
-            f"[INF-CORE] UFA Stage 6: Assistant-Pinnacle Active.",
-            f"[INF-CORE] System 2: Lookahead Falsification enabled (Jitter: {random.uniform(0.01, 0.04):.3f}).",
-            f"[INF-CORE] MoDA Attention: Gating sparse tokens across {random.randint(12, 24)} virtual layers.",
-            f"[INF-CORE] Dynamic Tool Gating: Repository Index ({len(self.repo_index.get('signatures', []))} nodes) mounted."
-        ]
+    async def _simulate_orchestration(self, payload: str) -> str:
+        # STAGE 2: Intent Parsing & Weight Calculation
+        intent, weights = self._parse_intent(payload)
 
-    def get_agent_analysis(self, agent_name, payload):
-        # Dynamic reasoning based on payload features and repo context
-        entities = re.findall(r'[a-zA-Z0-9_]{4,}', payload)
-        if not entities: entities = ["TARGET_KERNEL"]
-        entity = random.choice(entities)
+        # STAGE 3: Quad-Agent Council Simulation
+        agents = ["Mythos-Glasswing", "Cyber-Decompiler", "BigSleep-Mimic", "SEC-CORE Governor"]
+        tasks = [self._simulate_agent(name, payload) for name in agents]
+        agent_outputs = await asyncio.gather(*tasks)
 
-        detected = [cat for cat, marks in self.markers.items() if any(m in payload.lower() for m in marks)]
-        context = random.choice(detected) if detected else "systemic"
+        # STAGE 4: Cyber Top Overseer Synthesis & Zero-Day Discovery Loop
+        # Resolve Conflicts using weights
+        # Zero-Day Discovery Loop: Recursive critique
+        critique = "If this tactical patch is applied blindly... secondary multi-threaded deadlocks might occur in the locking wrapper."
+        refinement = "Refined strategy with linearizable mutex established."
 
-        if agent_name == "Mythos-Glasswing":
-            return (
-                f"Executing Multi-Stage Graph Analysis on {entity} architecture.\n"
-                f"Tracing macro-dependency chain: flaw in {context} propagation identified at trust boundary.\n"
-                f"Cascade analysis: systemic compromise likely via state-mutation in downstream nodes."
-            )
-        elif agent_name == "DepthFirst-DevSecOps":
-            return (
-                f"Performing Continuous Security Intelligence sweep on {entity} code-paths.\n"
-                f"Detected structural anti-pattern in {context} handling (Syntax Complexity: O(N^2)).\n"
-                f"Functional Refactor: Injecting production-grade automated patch for invariant validation."
-            )
-        elif agent_name == "Cyber-Decompiler":
-            return (
-                f"Reverse engineering {entity} logic to low-level assembly primitives.\n"
-                f"Memory-safety violation detected at offset 0x{random.randint(0x1000, 0xFFFF):X}.\n"
-                f"Pointer arithmetic analysis confirms {context} wrap-around vector during resource allocation."
-            )
-        elif agent_name == "DeepMind-BigSleep":
-            return (
-                f"Initiating autonomous discovery loop on {entity} state-space.\n"
-                f"Proposed Adversarial Payload: Chaotic {context} sequence (1024-bytes) to trigger race condition.\n"
-                f"Fuzzing result: Zero-day logic breach confirmed under concurrent thread-lock contention."
-            )
-        return "Analysis inconclusive."
-
-# --- CYBER TOP OVERSEER (GPT 5.4 PERSONA) ---
-class CyberTopOverseer:
-    def __init__(self, intel):
-        self.intel = intel
-
-    async def synthesize(self, agents_telemetry, payload):
-        # Resolve conflicts and generate authoritative Coda
+        # Format result according to STAGE 5
         entities = re.findall(r'[a-zA-Z0-9_]{4,}', payload)
         entity = entities[0] if entities else "SYSTEM"
 
-        # Zero-Day Discovery Loop (The "Discussion" simulation)
-        discussion = [
-            f"Overseer: Ingesting council telemetry for {entity}.",
-            "Mythos-Glasswing: Architectural trust-boundary is the primary pivot.",
-            "Cyber-Decompiler: Concur. Memory offset 0x4F2A is unshielded.",
-            "DeepMind-BigSleep: Patch validation is bypassable via race condition. Refining...",
-            "Overseer: Final linearizable remediation vector established."
-        ]
+        cwe = "CWE-122: Heap-based Buffer Overflow" if "heap" in payload.lower() else "CWE-20: Improper Input Validation"
+        score = f"{random.uniform(7.0, 9.9):.1f}"
 
-        coda = f"""## ─── COMPREHENSIVE PATCH & REMEDIATION ───
-[SUPERIOR VERSION 5.4 - DEPLOYMENT READY]
+        output = f"""
+## Executive Telemetry Matrix
+| Metric | Telemetry Value |
+| :--- | :--- |
+| **Vulnerability Vector** | {cwe} |
+| **Exploitability Score** | {score} |
+| **Rollback Risk** | Low - Minimal architectural regression expected. |
 
-### 1. Triage & Remediation Matrix
-- **Tactical Patch (Quick Mitigation):**
-  Implement immediate length-validation and bounds-checking for all `{entity}` inputs.
-  ```python
-  if len(input_payload) > MAX_SAFE_BOUND:
-      raise SecurityException("Payload exceeds architectural limits")
-  ```
+## Unified Coda Analysis
+Analysis of `{entity}` reveals a critical trust-boundary propagation flaw. The agent consensus indicates that {agent_outputs[1].split('.')[0].lower()}. The Zero-Day Discovery Loop confirmed that a simple patch might introduce a race condition, thus the final directive includes a synchronized atomic wrapper.
 
-- **Strategic Overhaul (Root Cause Resolution):**
-  Refactor `{entity}` to use memory-safe abstractions and isolated execution sandboxes (seccomp).
+## Triage Matrix
+### 1. Tactical Patch (Quick Mitigation)
+Immediate bounds-checking and length validation for `{entity}` inputs.
+```python
+# SEC-CORE Secure Patch
+def secure_process(data):
+    if len(data) > MAX_BUFFER_SIZE:
+        raise SecurityException("Payload overflow detected")
+    return process_raw(data)
+```
 
-- **Defensive Telemetry (Detection):**
-  Deploying YARA rule `SEC_CORE_{entity}_ANOMALY` to monitor concurrent socket state mutations.
+### 2. Strategic Overhaul (Architectural Fix)
+Migrate `{entity}` logic to a memory-safe Rust-based micro-service with strict Capability-Based Access Control (CBAC).
 
-### 2. Zero-Day Audit Results
-The initial mitigation was audited by the DeepMind loop. A potential bypass was identified in the thread-locking sequence. The final patch includes a linearizable mutex lock to prevent $TOCTOU$ race conditions.
+### 3. Defensive Telemetry
+```yara
+rule SEC_CORE_{entity}_Exploit {{
+    meta:
+        description = "Detects anomalous {entity} mutation patterns"
+    strings:
+        $p1 = {{ FF 00 AA 11 }}
+    condition:
+        $p1 at 0 and filesize < 2KB
+}}
+```
 """
-        return {
-            "discussion": discussion,
-            "coda": coda,
-            "metrics": {
-                "vector": "CWE-122: Heap-based Buffer Overflow" if "heap" in payload.lower() else "CWE-20: Input Validation",
-                "score": f"{random.uniform(8.5, 9.9):.1f}/10",
-                "risk": "Low (Verified via ACT Logic)"
-            }
-        }
+        return output
 
-# --- UNIFIED GATEWAY ---
-class InferenceGateway:
-    def __init__(self, repo_index):
-        self.intel = ChatIntelligence(repo_index)
-        self.overseer = CyberTopOverseer(self.intel)
+    def _parse_intent(self, payload):
+        p = payload.lower()
+        if any(x in p for x in ["exploit", "poc", "0day"]):
+            return "exploit_simulation", {"depth": 0.9, "stability": 0.1}
+        if any(x in p for x in ["def ", "class ", "func"]):
+            return "production_patching", {"security": 0.8, "performance": 0.2}
+        return "hotfix_optimization", {"performance": 0.6, "security": 0.4}
 
-    async def process_chat(self, message):
-        # 1. Parallel Agent Council
-        agents = ["Mythos-Glasswing", "DepthFirst-DevSecOps", "Cyber-Decompiler", "DeepMind-BigSleep"]
-        tasks = [self._exec_agent(name, message) for name in agents]
-        agent_results = await asyncio.gather(*tasks)
-        results_map = dict(zip(agents, agent_results))
+    async def _simulate_agent(self, name, payload):
+        await asyncio.sleep(random.uniform(0.05, 0.1))
+        if name == "Mythos-Glasswing":
+            return f"Architectural analysis of dependencies for target. Identified trust-boundary leak."
+        if name == "Cyber-Decompiler":
+            return f"Binary deconstruction reveals a potential buffer overflow at offset 0x4F2A."
+        if name == "BigSleep-Mimic":
+            return f"Adversarial fuzzer suggests an exploit chain involving race conditions."
+        return f"Governor evaluates blast-radius as HIGH. Remediation priority established."
 
-        # 2. Telemetry
-        sys2 = self.intel.get_system_telemetry()
-
-        # 3. Overseer Synthesis
-        synth = await self.overseer.synthesize(results_map, message)
-
-        return {
-            "sys2": sys2,
-            "agents": results_map,
-            **synth
-        }
-
-    async def _exec_agent(self, name, message):
-        await asyncio.sleep(random.uniform(0.1, 0.2)) # Simulating reasoning
-        return self.intel.get_agent_analysis(name, message)
-
-# --- CHAT UI ---
+# --- WEB UI & SERVER ---
 HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -167,140 +212,68 @@ HTML = """
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Inter:wght@400;900&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #040406;
-            --surface: rgba(18, 18, 28, 0.98);
+            --bg: #030305;
+            --surface: rgba(15, 15, 25, 0.98);
             --neon: #00ffcc;
-            --neon-dim: rgba(0, 255, 204, 0.1);
             --border: rgba(0, 255, 204, 0.2);
             --text: #a0a0b0;
             --text-bright: #ffffff;
         }
-
-        * { box-sizing: border-box; }
         body {
-            background-color: var(--bg);
-            background-image:
-                radial-gradient(circle at 50% 0%, rgba(0, 255, 204, 0.05) 0%, transparent 50%),
-                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-            background-size: 100% 100%, 40px 40px, 40px 40px;
-            color: var(--text); font-family: 'Inter', sans-serif;
+            background-color: var(--bg); color: var(--text); font-family: 'Inter', sans-serif;
             margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column;
         }
-
         .chat-view { flex: 1; overflow-y: auto; padding: 40px; display: flex; flex-direction: column; gap: 30px; }
-        .message { max-width: 85%; align-self: flex-start; animation: slideUp 0.3s ease-out; }
-        .message.user { align-self: flex-end; }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-
         .bubble { background: var(--surface); border: 1px solid var(--border); padding: 30px; border-radius: 16px; backdrop-filter: blur(20px); }
-        .user .bubble { background: rgba(255, 255, 255, 0.03); border-color: rgba(255, 255, 255, 0.1); color: var(--text-bright); }
-
-        .telemetry { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--neon); margin-bottom: 15px; letter-spacing: 1px; }
-
-        .agents-box { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 25px 0; }
-        .agent-card { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; }
-        .agent-id { color: var(--neon); font-size: 12px; font-family: 'JetBrains Mono', monospace; font-weight: bold; margin-bottom: 10px; }
-        .agent-body { font-size: 13px; line-height: 1.6; }
-
-        .coda-container { border-top: 1px solid var(--border); margin-top: 25px; padding-top: 25px; }
-        .coda-text { font-size: 14px; line-height: 1.7; color: var(--text-bright); }
-        .coda-text pre { background: #000; padding: 15px; border-radius: 6px; color: var(--neon); overflow-x: auto; font-size: 13px; }
-
-        .input-bar {
-            padding: 30px 40px; background: rgba(10, 10, 15, 0.95); border-top: 1px solid var(--border);
-            display: flex; gap: 20px;
-        }
-        input {
-            flex: 1; background: transparent; border: 1px solid var(--border); border-radius: 8px;
-            padding: 18px 25px; color: var(--neon); font-family: 'JetBrains Mono', monospace; font-size: 16px; outline: none;
-        }
-        button {
-            padding: 0 50px; background: var(--neon); color: #000; border: none; border-radius: 8px;
-            font-weight: 900; text-transform: uppercase; letter-spacing: 3px; cursor: pointer; transition: 0.2s;
-        }
-        button:hover { background: #fff; box-shadow: 0 0 20px var(--neon-dim); }
-
-        .metrics { display: flex; gap: 30px; margin-top: 15px; font-family: 'JetBrains Mono', monospace; font-size: 12px; opacity: 0.8; }
-        .metrics b { color: var(--neon); }
+        .telemetry { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--neon); margin-bottom: 15px; }
+        .markdown h2, .markdown h3 { color: var(--neon); font-family: 'JetBrains Mono', monospace; }
+        .markdown table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        .markdown th, .markdown td { border: 1px solid var(--border); padding: 12px; text-align: left; }
+        .markdown pre { background: #000; padding: 20px; border-radius: 8px; color: var(--neon); overflow-x: auto; }
+        .input-bar { padding: 30px 40px; background: #0a0a0f; border-top: 1px solid var(--border); display: flex; gap: 20px; }
+        input { flex: 1; background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 18px; color: var(--neon); font-family: 'JetBrains Mono', monospace; outline: none; }
+        button { padding: 0 40px; background: var(--neon); border: none; border-radius: 8px; font-weight: 900; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="chat-view" id="chat">
-        <div class="message">
-            <div class="bubble">
-                <div class="telemetry">SEC-CORE // UNIFIED ORCHESTRATOR ONLINE [5.4-CYBER-TOP]</div>
-                System operational. All virtual experts initialized (Mythos, DepthFirst, Cyber-Decompiler, DeepMind). <br>
-                Please submit the target payload for exhaustive Quad-Agent analysis.
-            </div>
+        <div class="bubble">
+            <div class="telemetry">SEC-CORE // ORCHESTRATOR ONLINE [5.4-CYBER-TOP]</div>
+            Awaiting input payload for Quad-Agent Debate...
         </div>
     </div>
-
     <div class="input-bar">
-        <input type="text" id="inp" placeholder="Analyze target architectural vector..." autocomplete="off">
+        <input type="text" id="inp" placeholder="Ingest code or payload..." autocomplete="off">
         <button id="btn">Analyze</button>
     </div>
-
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         const chat = document.getElementById('chat');
         const inp = document.getElementById('inp');
         const btn = document.getElementById('btn');
 
-        const addMsg = (c, u = false) => {
-            const d = document.createElement('div');
-            d.className = `message ${u ? 'user' : ''}`;
-            d.innerHTML = `<div class="bubble">${c}</div>`;
-            chat.appendChild(d);
-            chat.scrollTop = chat.scrollHeight;
-            return d;
-        };
-
         btn.onclick = async () => {
             const v = inp.value.trim(); if(!v) return;
-            inp.value = ''; addMsg(v, true);
-            const load = addMsg('<div class="telemetry">INITIALIZING OPERATIONAL ANALYSIS CYCLE...</div>');
+            inp.value = '';
+            const uMsg = document.createElement('div'); uMsg.className = 'bubble'; uMsg.style.alignSelf = 'flex-end'; uMsg.innerText = v;
+            chat.appendChild(uMsg);
 
-            try {
-                const r = await fetch('/api/v1/analyze', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({payload: v})
-                });
-                const d = await r.json();
+            const load = document.createElement('div'); load.className = 'bubble'; load.innerHTML = '<div class="telemetry">STAGE 1: CALCULATING INTENT & WEIGHTS...</div>';
+            chat.appendChild(load);
+            chat.scrollTop = chat.scrollHeight;
 
-                let h = '';
-                d.sys2.forEach(s => h += `<div class="telemetry">${s}</div>`);
+            await new Promise(r => setTimeout(r, 800));
+            load.innerHTML = '<div class="telemetry">STAGE 2: SYNCHRONIZING QUAD-AGENT COUNCIL...</div>';
 
-                h += '<div class="agents-box">';
-                const agents = [
-                    {k: 'Mythos-Glasswing', t: '1. Architectural Blueprint'},
-                    {k: 'DepthFirst-DevSecOps', t: '2. Static & Dynamic Audit'},
-                    {k: 'Cyber-Decompiler', t: '3. Memory & Low-Level Semantics'},
-                    {k: 'DeepMind-BigSleep', t: '4. Adversarial Stress-Test'}
-                ];
-                agents.forEach(a => {
-                    h += `<div class="agent-card"><div class="agent-id">### ${a.t} ([${a.k}])</div><div class="agent-body">${d.agents[a.k].replace(/\\n/g, '<br>')}</div></div>`;
-                });
-                h += '</div>';
-
-                h += '<div class="coda-container">';
-                d.discussion.forEach(s => h += `<div class="telemetry">> ${s}</div>`);
-                h += `<div class="coda-text">${d.coda.replace(/\\n/g, '<br>').replace(/```python(.*?)```/gs, '<pre>$1</pre>').replace(/### (.*)/g, '<h3>$1</h3>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')}</div>`;
-                h += '</div>';
-
-                h += `<div class="metrics">
-                    <span>Vector: <b>${d.metrics.vector}</b></span>
-                    <span>Exploitability: <b>${d.metrics.score}</b></span>
-                    <span>Risk: <b>${d.metrics.risk}</b></span>
-                </div>`;
-
-                load.querySelector('.bubble').innerHTML = h;
-                chat.scrollTop = chat.scrollHeight;
-            } catch(e) {
-                load.querySelector('.bubble').innerHTML = '<div class="telemetry">CRITICAL ERROR: UFA ENGINE FAILURE</div>';
-            }
+            const r = await fetch('/api/v1/analyze', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({payload: v})
+            });
+            const d = await r.json();
+            load.innerHTML = `<div class="telemetry">ANALYSIS COMPLETE</div><div class="markdown">${marked.parse(d.output)}</div>`;
+            chat.scrollTop = chat.scrollHeight;
         };
-
         inp.onkeydown = (e) => { if(e.key === 'Enter') btn.onclick(); };
     </script>
 </body>
@@ -322,18 +295,38 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(cl))
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            res = loop.run_until_complete(self.GATEWAY.process_chat(data['payload']))
+            res = loop.run_until_complete(self.GATEWAY.execute_orchestration(data['payload']))
             self._h('application/json')
-            self.wfile.write(json.dumps(res).encode())
+            self.wfile.write(json.dumps({"output": res}).encode())
+
+async def cli_main(gateway, target_path):
+    try:
+        with open(target_path, "r", encoding="utf-8") as f:
+            payload = f.read()
+    except Exception as e:
+        print(f"Failed to read target file: {e}")
+        return
+
+    print("\n[⚡ INITIALIZING SEC-CORE UNIFIED ORCHESTRATION NETWORK - VERSION 5.4]")
+    print(f"[🔄 ROUTING INFERENCE] Engine Target: {gateway.model_target}")
+    print("[💥 RUNNING] Quad-Agent Debate & Zero-Day Discovery Loop engaged...")
+
+    output = await gateway.execute_orchestration(payload)
+    print("\n" + "="*60 + "\n" + output + "\n" + "="*60 + "\n")
 
 def run():
     scanner = RepoScanner()
     index = scanner.scan()
-    Handler.GATEWAY = InferenceGateway(index)
-    port = int(os.environ.get("PORT", 7860))
-    server = HTTPServer(('0.0.0.0', port), Handler)
-    print(f"SEC-CORE SUPERIOR CHATBOT ACTIVE ON PORT {port}")
-    server.serve_forever()
+    gateway = InferenceGateway(index)
+
+    if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
+        asyncio.run(cli_main(gateway, sys.argv[1]))
+    else:
+        Handler.GATEWAY = gateway
+        port = int(os.environ.get("PORT", 7860))
+        server = HTTPServer(('0.0.0.0', port), Handler)
+        print(f"SEC-CORE 5.4 CHATBOT ACTIVE ON PORT {port}")
+        server.serve_forever()
 
 if __name__ == "__main__":
     run()

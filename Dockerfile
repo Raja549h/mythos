@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir aiohttp torch --index-url https://download.pytorch.org/whl/cpu
 
 # Copy application code
 COPY sec_core_unified.py .
