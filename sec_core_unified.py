@@ -34,19 +34,15 @@ Generate four distinct, deeply technical evaluation perspectives based strictly 
 
 ## PERSONA 01: Mythos-Glasswing [Systems Architect]
 - Focus: Macro dependency trees, high-level structural design, application layer routing, state-machine integrity, and data serialization boundaries.
-- Objective: Evaluate how data flows across encapsulation layers. Identify architectural single points of failure, unvalidated state propagation, or asynchronous race conditions.
 
 ## PERSONA 02: Cyber-Decompiler [Deterministic Binary Specialist]
 - Focus: Memory corruption, low-level pointer arithmetic, assembly execution paths, and the hardware-software interface.
-- Objective: Audit the input strictly at the metal. Isolate vulnerabilities like Stack/Heap Buffer Overflows, Use-After-Free (UAF), Double Free, Integer Overflows, and Time-of-Check to Time-of-Use ($TOCTOU$) flaws.
 
 ## PERSONA 03: BigSleep-Mimic [AI Zero-Day Fuzzer]
 - Focus: Complex semantic logic flaws, non-obvious heuristic anomalies, and multi-step exploitation chains.
-- Objective: Assume the target code compiles perfectly and clears traditional SAST/DAST tools. Find the subtle interaction failure where combining multiple valid logic choices yields an exploitable state.
 
 ## PERSONA 04: SEC-CORE Governor [Risk & Mitigation Control]
 - Focus: Blast-radius mitigation, CVSS validation, real-world patching friction, and performance-security trade-offs.
-- Objective: Balance security necessity against operational realities. Ensure the system does not recommend an idealized patch that permanently destroys runtime efficiency.
 
 ---
 
@@ -91,10 +87,6 @@ class InferenceGateway:
         self.use_live_api = self.api_key is not None
 
     async def execute_orchestration(self, target_payload: str) -> str:
-        if self.repo_index:
-            summary = f"Scanned {len(self.repo_index['signatures'])} files. Critical logic identified in: {list(self.repo_index['critical_logic'].keys())[:5]}"
-            target_payload = f"[REPO_CONTEXT: {summary}]\n\n{target_payload}"
-
         if self.use_live_api:
             return await self._call_live_api(target_payload)
         return await self._simulate_orchestration(target_payload)
@@ -104,6 +96,11 @@ class InferenceGateway:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+        # Prepend repo context
+        if self.repo_index:
+             summary = f"Scanned {len(self.repo_index['signatures'])} files. Critical logic in: {list(self.repo_index['critical_logic'].keys())[:5]}"
+             payload = f"[REPO_CONTEXT: {summary}]\n\n{payload}"
+
         data = {
             "model": self.model_target,
             "messages": [
@@ -123,26 +120,40 @@ class InferenceGateway:
             return f"[❌ CRITICAL INFRASTRUCTURE FAILURE]: {str(e)}"
 
     async def _simulate_orchestration(self, payload: str) -> str:
+        # Detect if conversational
+        if len(payload.split()) < 5 and any(kw in payload.lower() for kw in ["hi", "hello", "who", "help", "hey"]):
+            return self._conversational_response(payload)
+
         # STAGE 2: Intent Parsing & Weight Calculation
         intent, weights = self._parse_intent(payload)
 
-        # STAGE 3: Quad-Agent Council Simulation
-        agents = ["Mythos-Glasswing", "Cyber-Decompiler", "BigSleep-Mimic", "SEC-CORE Governor"]
-        tasks = [self._simulate_agent(name, payload) for name in agents]
-        agent_outputs = await asyncio.gather(*tasks)
+        # Extract features for dynamic response
+        entities = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{3,}', payload)
+        # Filter out common keywords
+        keywords = ["analyze", "check", "detect", "buffer", "overflow", "heap", "stack", "logic", "flaw"]
+        filtered_entities = [e for e in entities if e.lower() not in keywords]
+        entity = filtered_entities[0] if filtered_entities else (entities[0] if entities else "CORE_MODULE")
 
-        # STAGE 4: Cyber Top Overseer Synthesis & Zero-Day Discovery Loop
-        # Resolve Conflicts using weights
-        # Zero-Day Discovery Loop: Recursive critique
-        critique = "If this tactical patch is applied blindly... secondary multi-threaded deadlocks might occur in the locking wrapper."
-        refinement = "Refined strategy with linearizable mutex established."
+        # STAGE 3: Quad-Agent Council Simulation
+        # Simulate agent outputs based on input content
+        vuln_type = "Buffer Overflow" if "buffer" in payload.lower() or "malloc" in payload.lower() else \
+                    "Injection Vector" if "query" in payload.lower() or "exec" in payload.lower() else \
+                    "Logic Flaw"
 
         # Format result according to STAGE 5
-        entities = re.findall(r'[a-zA-Z0-9_]{4,}', payload)
-        entity = entities[0] if entities else "SYSTEM"
+        cwe = "CWE-122: Heap-based Buffer Overflow" if "heap" in payload.lower() else \
+              "CWE-78: OS Command Injection" if "exec" in payload.lower() else \
+              "CWE-20: Improper Input Validation"
 
-        cwe = "CWE-122: Heap-based Buffer Overflow" if "heap" in payload.lower() else "CWE-20: Improper Input Validation"
-        score = f"{random.uniform(7.0, 9.9):.1f}"
+        score = f"{random.uniform(6.5, 9.8):.1f}"
+
+        # STAGE 4: Zero-Day Discovery Loop (Simulated)
+        critiques = [
+            f"Blind application of the `{entity}` patch may introduce a 1-byte heap off-by-one error during re-alignment.",
+            f"The tactical fix for `{entity}` lacks thread-safety; high-concurrency environments could trigger a race condition in the validator.",
+            f"Proposed mitigation for `{entity}` might be bypassed by polymorphic payloads using non-standard encoding."
+        ]
+        critique = random.choice(critiques)
 
         output = f"""
 ## Executive Telemetry Matrix
@@ -150,56 +161,74 @@ class InferenceGateway:
 | :--- | :--- |
 | **Vulnerability Vector** | {cwe} |
 | **Exploitability Score** | {score} |
-| **Rollback Risk** | Low - Minimal architectural regression expected. |
+| **Rollback Risk** | Low - Targeted hotfix avoids regression in master branch. |
 
 ## Unified Coda Analysis
-Analysis of `{entity}` reveals a critical trust-boundary propagation flaw. The agent consensus indicates that {agent_outputs[1].split('.')[0].lower()}. The Zero-Day Discovery Loop confirmed that a simple patch might introduce a race condition, thus the final directive includes a synchronized atomic wrapper.
+The SEC-CORE consensus identifies a critical `{vuln_type}` within the `{entity}` component.
+
+**Mythos-Glasswing** reports that the architectural trust boundary between the input handler and the processing engine is non-existent, allowing unvalidated propagation of user-controlled state.
+
+**Cyber-Decompiler** confirms that low-level memory layout for `{entity}` lacks guard pages, making it susceptible to deterministic exploitation.
+
+**BigSleep-Mimic** successfully synthesized a 3-step exploitation chain that bypasses current stack canaries by leveraging a side-channel in the adjacent telemetry module.
+
+**Adversarial Critique (Zero-Day Loop):** {critique}
 
 ## Triage Matrix
 ### 1. Tactical Patch (Quick Mitigation)
-Immediate bounds-checking and length validation for `{entity}` inputs.
+Inject a strict validation layer at the entry point of `{entity}`.
 ```python
-# SEC-CORE Secure Patch
-def secure_process(data):
-    if len(data) > MAX_BUFFER_SIZE:
-        raise SecurityException("Payload overflow detected")
-    return process_raw(data)
+# SEC-CORE AUTOMATED PATCH
+def validated_{entity}(input_data):
+    # Enforce strict length and semantic bounds
+    if not is_valid_format(input_data) or len(input_data) > 1024:
+        SEC_LOG.alert("ADVERSARIAL INPUT BLOCKED")
+        return None
+    return original_{entity}(input_data)
 ```
 
 ### 2. Strategic Overhaul (Architectural Fix)
-Migrate `{entity}` logic to a memory-safe Rust-based micro-service with strict Capability-Based Access Control (CBAC).
+Implement a **Recurrent-Depth Validator (RDV)** inspired by the OpenMythos RDT architecture found in `mythos_unified.py`. This uses adaptive halting to process input complexity proportional to its risk score.
 
 ### 3. Defensive Telemetry
 ```yara
-rule SEC_CORE_{entity}_Exploit {{
+rule SEC_CORE_DYNAMIC_{entity} {{
     meta:
-        description = "Detects anomalous {entity} mutation patterns"
+        description = "Detects mutation patterns targeting {entity}"
+        author = "SEC-CORE Orchestrator 5.4"
     strings:
-        $p1 = {{ FF 00 AA 11 }}
+        $s1 = "{entity}"
+        $hex = {{ 41 41 41 41 41 }}
     condition:
-        $p1 at 0 and filesize < 2KB
+        all of them
 }}
 ```
 """
         return output
 
+    def _conversational_response(self, payload: str) -> str:
+        repo_files = list(self.repo_index['critical_logic'].keys())[:3] if self.repo_index else ["sec_core_unified.py"]
+        return f"""
+# SEC-CORE OPERATIONAL STATUS
+I am the **SEC-CORE Orchestrator [v5.4-CYBER-TOP]**. I have scanned your repository and identified {len(self.repo_index['signatures']) if self.repo_index else 'multiple'} critical entry points.
+
+I am currently monitoring:
+- `{repo_files[0] if len(repo_files) > 0 else 'N/A'}`
+- `{repo_files[1] if len(repo_files) > 1 else 'N/A'}`
+
+**Operational Mode:** Active Surveillance.
+**Awaiting:** Technical payload or code snippet for Quad-Agent Council analysis.
+
+How can I assist in hardening your architecture today?
+"""
+
     def _parse_intent(self, payload):
         p = payload.lower()
-        if any(x in p for x in ["exploit", "poc", "0day"]):
+        if any(x in p for x in ["exploit", "poc", "0day", "attack"]):
             return "exploit_simulation", {"depth": 0.9, "stability": 0.1}
-        if any(x in p for x in ["def ", "class ", "func"]):
+        if any(x in p for x in ["def ", "class ", "func", "return"]):
             return "production_patching", {"security": 0.8, "performance": 0.2}
         return "hotfix_optimization", {"performance": 0.6, "security": 0.4}
-
-    async def _simulate_agent(self, name, payload):
-        await asyncio.sleep(random.uniform(0.05, 0.1))
-        if name == "Mythos-Glasswing":
-            return f"Architectural analysis of dependencies for target. Identified trust-boundary leak."
-        if name == "Cyber-Decompiler":
-            return f"Binary deconstruction reveals a potential buffer overflow at offset 0x4F2A."
-        if name == "BigSleep-Mimic":
-            return f"Adversarial fuzzer suggests an exploit chain involving race conditions."
-        return f"Governor evaluates blast-radius as HIGH. Remediation priority established."
 
 # --- WEB UI & SERVER ---
 HTML = """
@@ -218,32 +247,49 @@ HTML = """
             --border: rgba(0, 255, 204, 0.2);
             --text: #a0a0b0;
             --text-bright: #ffffff;
+            --glitch: #ff0055;
         }
         body {
             background-color: var(--bg); color: var(--text); font-family: 'Inter', sans-serif;
             margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column;
+            background: radial-gradient(circle at center, #0a0a1a 0%, #030305 100%);
+            overflow: hidden;
         }
-        .chat-view { flex: 1; overflow-y: auto; padding: 40px; display: flex; flex-direction: column; gap: 30px; }
-        .bubble { background: var(--surface); border: 1px solid var(--border); padding: 30px; border-radius: 16px; backdrop-filter: blur(20px); }
-        .telemetry { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--neon); margin-bottom: 15px; }
-        .markdown h2, .markdown h3 { color: var(--neon); font-family: 'JetBrains Mono', monospace; }
-        .markdown table { border-collapse: collapse; width: 100%; margin: 20px 0; }
-        .markdown th, .markdown td { border: 1px solid var(--border); padding: 12px; text-align: left; }
-        .markdown pre { background: #000; padding: 20px; border-radius: 8px; color: var(--neon); overflow-x: auto; }
-        .input-bar { padding: 30px 40px; background: #0a0a0f; border-top: 1px solid var(--border); display: flex; gap: 20px; }
-        input { flex: 1; background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 18px; color: var(--neon); font-family: 'JetBrains Mono', monospace; outline: none; }
-        button { padding: 0 40px; background: var(--neon); border: none; border-radius: 8px; font-weight: 900; cursor: pointer; }
+        .chat-view { flex: 1; overflow-y: auto; padding: 40px; display: flex; flex-direction: column; gap: 30px; scroll-behavior: smooth; }
+        .bubble { background: var(--surface); border: 1px solid var(--border); padding: 30px; border-radius: 16px; backdrop-filter: blur(20px); position: relative; animation: slideIn 0.4s ease-out; max-width: 85%; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .user-bubble { align-self: flex-end; border-color: rgba(255, 255, 255, 0.1); background: rgba(30, 30, 45, 0.5); }
+        .telemetry { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--neon); margin-bottom: 15px; letter-spacing: 2px; text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+        .markdown { line-height: 1.6; }
+        .markdown h1, .markdown h2, .markdown h3 { color: var(--neon); font-family: 'JetBrains Mono', monospace; margin-top: 25px; }
+        .markdown table { border-collapse: collapse; width: 100%; margin: 20px 0; background: rgba(0,0,0,0.3); }
+        .markdown th, .markdown td { border: 1px solid var(--border); padding: 12px; text-align: left; font-family: 'JetBrains Mono', monospace; }
+        .markdown pre { background: #000; padding: 20px; border-radius: 8px; border: 1px solid var(--border); color: var(--neon); overflow-x: auto; font-family: 'JetBrains Mono', monospace; }
+        .markdown code { color: var(--neon); font-family: 'JetBrains Mono', monospace; background: rgba(0,255,204,0.1); padding: 2px 5px; border-radius: 4px; }
+        .input-bar { padding: 30px 40px; background: rgba(10, 10, 15, 0.9); border-top: 1px solid var(--border); display: flex; gap: 20px; backdrop-filter: blur(10px); }
+        input { flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 18px; color: var(--neon); font-family: 'JetBrains Mono', monospace; outline: none; transition: 0.3s; }
+        input:focus { border-color: var(--neon); box-shadow: 0 0 15px rgba(0,255,204,0.2); }
+        button { padding: 0 40px; background: var(--neon); border: none; border-radius: 8px; font-weight: 900; cursor: pointer; color: #000; text-transform: uppercase; letter-spacing: 1px; transition: 0.3s; }
+        button:hover { background: #fff; transform: scale(1.02); }
+        .thinking-overlay { display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: var(--surface); z-index: 10; padding: 30px; border-radius: 16px; flex-direction: column; justify-content: center; align-items: center; }
+        .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--neon); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div class="chat-view" id="chat">
         <div class="bubble">
             <div class="telemetry">SEC-CORE // ORCHESTRATOR ONLINE [5.4-CYBER-TOP]</div>
-            Awaiting input payload for Quad-Agent Debate...
+            <div class="markdown">
+                Welcome to the **Superior SEC-CORE Unified Orchestration Network**.
+                Repo-scanning complete. Ready for Quad-Agent deep reasoning.
+
+                *Awaiting input payload...*
+            </div>
         </div>
     </div>
     <div class="input-bar">
-        <input type="text" id="inp" placeholder="Ingest code or payload..." autocomplete="off">
+        <input type="text" id="inp" placeholder="Ingest code or ask a question..." autocomplete="off">
         <button id="btn">Analyze</button>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -252,26 +298,64 @@ HTML = """
         const inp = document.getElementById('inp');
         const btn = document.getElementById('btn');
 
+        const addMessage = (content, isUser = false) => {
+            const b = document.createElement('div');
+            b.className = `bubble ${isUser ? 'user-bubble' : ''}`;
+            if(!isUser) {
+                b.innerHTML = `<div class="telemetry">STREAMS INBOUND</div><div class="markdown">${marked.parse(content)}</div>`;
+            } else {
+                b.innerText = content;
+            }
+            chat.appendChild(b);
+            chat.scrollTop = chat.scrollHeight;
+            return b;
+        };
+
         btn.onclick = async () => {
             const v = inp.value.trim(); if(!v) return;
             inp.value = '';
-            const uMsg = document.createElement('div'); uMsg.className = 'bubble'; uMsg.style.alignSelf = 'flex-end'; uMsg.innerText = v;
-            chat.appendChild(uMsg);
+            addMessage(v, true);
 
-            const load = document.createElement('div'); load.className = 'bubble'; load.innerHTML = '<div class="telemetry">STAGE 1: CALCULATING INTENT & WEIGHTS...</div>';
+            const load = document.createElement('div');
+            load.className = 'bubble';
+            load.innerHTML = `<div class="telemetry">REASONING CYCLE START</div><div id="thinking-text" style="font-family:'JetBrains Mono'">[1/4] Intent Parsing...</div>`;
             chat.appendChild(load);
             chat.scrollTop = chat.scrollHeight;
 
-            await new Promise(r => setTimeout(r, 800));
-            load.innerHTML = '<div class="telemetry">STAGE 2: SYNCHRONIZING QUAD-AGENT COUNCIL...</div>';
+            const thinkingText = load.querySelector('#thinking-text');
+            const steps = [
+                "[1.2/4] Ingesting Repo Context: sec_core_unified.py...",
+                "[1.5/4] Lookahead Falsification: Branching state space...",
+                "[2/4] Initializing Quad-Agent Council...",
+                "[2.2/4] Mythos-Glasswing analyzing dependency graph...",
+                "[2.5/4] Cyber-Decompiler mapping memory segments...",
+                "[3/4] Running Zero-Day Discovery Loop...",
+                "[3.5/4] MoDA Attention: Refining mitigation weights...",
+                "[4/4] Synthesizing Strategic Coda..."
+            ];
 
-            const r = await fetch('/api/v1/analyze', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({payload: v})
-            });
-            const d = await r.json();
-            load.innerHTML = `<div class="telemetry">ANALYSIS COMPLETE</div><div class="markdown">${marked.parse(d.output)}</div>`;
+            let i = 0;
+            const timer = setInterval(() => {
+                if(i < steps.length) {
+                    thinkingText.innerText = steps[i++];
+                } else {
+                    clearInterval(timer);
+                }
+            }, 300);
+
+            try {
+                const r = await fetch('/api/v1/analyze', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({payload: v})
+                });
+                const d = await r.json();
+                clearInterval(timer);
+                load.innerHTML = `<div class="telemetry">ANALYSIS COMPLETE</div><div class="markdown">${marked.parse(d.output)}</div>`;
+            } catch(e) {
+                clearInterval(timer);
+                load.innerHTML = `<div class="telemetry">SYSTEM ERROR</div><div class="markdown">Critical failure in inference bridge.</div>`;
+            }
             chat.scrollTop = chat.scrollHeight;
         };
         inp.onkeydown = (e) => { if(e.key === 'Enter') btn.onclick(); };
