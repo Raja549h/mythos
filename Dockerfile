@@ -8,11 +8,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-RUN pip install --no-cache-dir aiohttp torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir aiohttp
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Copy application code
-COPY sec_core_unified.py .
-COPY repo_scanner.py .
+COPY . .
 
 # Environment variables for HF Spaces
 ENV PORT=7860
