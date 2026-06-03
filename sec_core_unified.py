@@ -5,9 +5,29 @@ import asyncio
 import random
 import re
 import aiohttp
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
 from repo_scanner import RepoScanner
+
+# Core architecture components from the OpenMythos stack
+from mythos_unified import (
+    GQAAttention,
+    ProductKeyMoE,
+    RotaryEmbedding,
+    RMSNorm,
+    TransformerBlock,
+)
+from open_mythos.moda import (
+    MoDAAttention,
+    MoDAConfig,
+    apply_rotary_emb,
+)
 
 # ==========================================
 # STAGE 1: THE MONOLITHIC MASTER DIRECTIVE
@@ -75,9 +95,581 @@ You must format your final synthesis exactly according to the structure below. R
 [Provide a fully functional, production-ready detection signature like a YARA rule or Snort signature.]
 """
 
+# =========================================================================
+# Byte-Level Tokenizer (fully offline, zero dependencies)
+# =========================================================================
+
+class ByteTokenizer:
+    """Byte-level tokenizer for fully offline operation.
+
+    Maps each UTF-8 byte (0–255) to a token ID with reserved special tokens.
+    No HuggingFace, no internet, no external files required.
+    """
+
+    def __init__(self, vocab_size: int = 32000):
+        self.vocab_size = vocab_size
+        self._byte_offset = 3  # Reserve 0=PAD, 1=BOS, 2=EOS
+        self.pad_id = 0
+        self.bos_id = 1
+        self.eos_id = 2
+
+    def encode(self, text: str) -> List[int]:
+        """Encode text to byte-level token IDs with BOS/EOS markers."""
+        return (
+            [self.bos_id]
+            + [b + self._byte_offset for b in text.encode("utf-8")]
+            + [self.eos_id]
+        )
+
+    def decode(self, token_ids: List[int]) -> str:
+        """Decode token IDs back to text, skipping special tokens."""
+        raw = []
+        for tid in token_ids:
+            if tid in (self.pad_id, self.bos_id, self.eos_id):
+                continue
+            b = tid - self._byte_offset
+            if 0 <= b <= 255:
+                raw.append(b)
+        return bytes(raw).decode("utf-8", errors="replace")
+
+
+def get_tokenizer(vocab_size: int = 32000):
+    """Return the best available tokenizer, falling back to byte-level."""
+    try:
+        from open_mythos.tokenizer import MythosTokenizer
+
+        tok = MythosTokenizer()
+        tok.pad_id = 0
+        tok.bos_id = 1
+        tok.eos_id = 2
+        return tok
+    except Exception:
+        return ByteTokenizer(vocab_size)
+
+
+# =========================================================================
+# Council Persona Definitions
+# =========================================================================
+
+COUNCIL_PERSONAS = {
+    0: "Mythos-Glasswing",       # Systems Architect — macro dependency trees, state-machine integrity
+    1: "Mythos-Glasswing",       # Systems Architect (deep refinement pass)
+    2: "DepthFirst-DevSecOps",   # Syntax & path optimization, secure coding patterns
+    3: "DepthFirst-DevSecOps",   # DevSecOps (deep refinement pass)
+    4: "Cyber-Decompiler",       # Binary specialist — memory corruption, UAF, TOCTOU
+    5: "Cyber-Decompiler",       # Decompiler (deep refinement pass)
+    6: "BigSleep-Mimic",         # AI zero-day fuzzer — semantic logic flaws, multi-step chains
+    7: "BigSleep-Mimic",         # BigSleep (deep refinement pass)
+}
+
+# Persona descriptions used in structured output
+PERSONA_ROLES = {
+    "Mythos-Glasswing": "Global macro-architecture, dependency trees, async race conditions",
+    "DepthFirst-DevSecOps": "Syntax-level security, secure path optimization, input validation",
+    "Cyber-Decompiler": "Memory corruption, pointer arithmetic, buffer overflows, UAF, TOCTOU",
+    "BigSleep-Mimic": "Semantic logic flaws, multi-step exploitation chains, zero-day discovery",
+}
+
+
+# =========================================================================
+# Configuration
+# =========================================================================
+
+@dataclass
+class MythosConfig:
+    """SEC-CORE engine configuration.
+
+    Key fixes vs. original:
+      act_threshold = 1.0   → forces ALL loops to execute (no premature halting)
+      max_loop_iters = 8    → 2 passes per persona (4 personas × 2 = 8)
+    """
+
+    vocab_size: int = 32000
+    dim: int = 768
+    n_heads: int = 12
+    n_kv_heads: int = 3
+    max_seq_len: int = 4096
+    max_loop_iters: int = 8        # 2 passes per persona × 4 personas
+    prelude_layers: int = 3
+    coda_layers: int = 3
+    n_experts: int = 64
+    k1: int = 2
+    k2: int = 2
+    expert_dim: int = 256
+    lora_rank: int = 32
+    act_threshold: float = 1.0     # FIXED: force all loops to run
+    norm_eps: float = 1e-6
+    rope_theta: float = 1000000.0
+    lookahead_entropy_threshold: float = 0.2
+    dropout: float = 0.0
+    n_shared_experts: int = 2
+
+
+# =========================================================================
+# SEC-CORE Council Conditioners (Persona Routing Vectors)
+# =========================================================================
+
+class SECCouncilConditioners(nn.Module):
+    """Learned per-persona bias vectors injected into each recurrent loop.
+
+    The 4 persona vectors steer the shared transformer block to attend to
+    different aspects of the input at each loop iteration, implementing the
+    "Quad-Agent Council" as a purely architectural mechanism.
+    """
+
+    def __init__(self, dim: int, n_personas: int = 4):
+        super().__init__()
+        self.n_personas = n_personas
+        self.conditioners = nn.Parameter(torch.randn(n_personas, dim) * 0.02)
+
+    def get_conditioner(self, loop_t: int) -> torch.Tensor:
+        """Return the persona vector for loop iteration `loop_t`.
+
+        Each persona gets 2 consecutive loops (initial + refinement pass).
+        """
+        persona_idx = (loop_t // 2) % self.n_personas
+        return self.conditioners[persona_idx]
+
+    def get_persona_name(self, loop_t: int) -> str:
+        """Human-readable name for the active persona at `loop_t`."""
+        return COUNCIL_PERSONAS.get(loop_t, f"Persona-{loop_t}")
+
+
+# =========================================================================
+# Lookahead Halting Gate (FIXED initialization)
+# =========================================================================
+
+class LookaheadHaltingGate(nn.Module):
+    """ACT halting gate with lookahead collision detection.
+
+    CRITICAL FIX: halt_proj is initialized with zero weights and bias=-5.0
+    so that sigmoid output ≈ 0.007 at init. This prevents the untrained
+    gate from halting all computation at loop 1–2 (the root cause of
+    "pre-decided messages" with random weights).
+
+    Once the model is trained, the gate learns to halt appropriately.
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.halt_proj = nn.Linear(dim, 1)
+        self.lookahead_proj = nn.Linear(dim, dim, bias=False)
+        nn.init.orthogonal_(self.lookahead_proj.weight)
+
+        # FIX: Initialize so sigmoid(output) ≈ 0.007 — never halts early
+        nn.init.zeros_(self.halt_proj.weight)
+        nn.init.constant_(self.halt_proj.bias, -5.0)
+
+    def forward(self, h: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        p_halt = torch.sigmoid(self.halt_proj(h)).squeeze(-1)
+        h_next = torch.tanh(self.lookahead_proj(h))
+        cosine_sim = F.cosine_similarity(h, h_next, dim=-1)
+        collision_signal = 1.0 - cosine_sim
+        return p_halt, collision_signal
+
+
+# =========================================================================
+# LTI-Stable Injection (unchanged)
+# =========================================================================
+
+class SEC_LTIInjection(nn.Module):
+    """Stable input injection: h_{t+1} = A·h_t + B·(e + conditioner) + trans_out.
+
+    Spectral radius ρ(A) < 1 is guaranteed by construction via
+    A = exp(-exp(log_dt + log_A)), keeping the recurrence stable
+    regardless of loop depth.
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.log_A = nn.Parameter(torch.zeros(dim))
+        self.log_dt = nn.Parameter(torch.zeros(1))
+        self.B = nn.Parameter(torch.ones(dim) * 0.1)
+
+    def get_A(self) -> torch.Tensor:
+        return torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-20, 20)))
+
+    def forward(self, h, e, conditioner, trans_out):
+        A = self.get_A()
+        return A * h + self.B * (e + conditioner) + trans_out
+
+
+# =========================================================================
+# Recurrent SEC-CORE Block with MoDA Cross-Loop Attention
+# =========================================================================
+
+class RecurrentSECBlock(nn.Module):
+    """The core recurrent block — one transformer block looped max_loop_iters times.
+
+    Each iteration:
+      1. Council conditioner injection (persona-specific bias)
+      2. MoDA attention (jointly attends to current + ALL previous loops)
+      3. ProductKey MoE (sparse expert routing)
+      4. Lookahead collision detection + backtracking perturbation
+      5. LTI stable injection (A·h + B·e + transformer_out)
+      6. ACT halting accumulation (disabled until trained)
+      7. Depth-write to MoDA KV cache (for next loop to read)
+
+    The MoDA cross-loop attention is the key mechanism: loop 7 (BigSleep)
+    can directly attend to the keys/values written by loop 1 (Glasswing),
+    enabling genuine multi-agent deliberation within a single forward pass.
+    """
+
+    def __init__(self, cfg: MythosConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.dim = cfg.dim
+        self.council_conditioners = SECCouncilConditioners(cfg.dim)
+        self.attn_norm = RMSNorm(cfg.dim, cfg.norm_eps)
+
+        # Cross-Loop MoDA Integration
+        self.attn = MoDAAttention(MoDAConfig(
+            d_model=cfg.dim,
+            n_heads_q=cfg.n_heads,
+            n_heads_kv=cfg.n_kv_heads,
+            head_dim=cfg.dim // cfg.n_heads,
+            attn_dropout=cfg.dropout,
+        ))
+
+        self.moe = ProductKeyMoE(cfg)
+
+        # Depth write projections for MoDA cross-loop cache
+        head_dim = cfg.dim // cfg.n_heads
+        self.k_write = nn.Linear(cfg.dim, cfg.n_kv_heads * head_dim, bias=False)
+        self.v_write = nn.Linear(cfg.dim, cfg.n_kv_heads * head_dim, bias=False)
+
+        self.injection = SEC_LTIInjection(cfg.dim)
+        self.halting = LookaheadHaltingGate(cfg.dim)
+        self.lora = nn.Linear(cfg.dim, cfg.dim, bias=False)
+        nn.init.zeros_(self.lora.weight)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        e: torch.Tensor,
+        rope_freqs: Tuple[torch.Tensor, torch.Tensor],
+        mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], Dict[str, float]]:
+        """Run the recurrent loop for max_loop_iters iterations.
+
+        Returns:
+            h_accum:        ACT-weighted hidden state accumulation (B, T, D)
+            latent_history: List of detached hidden states per loop (for persona routing)
+            telemetry:      Dict of computational telemetry (halt probs, expert routing, etc.)
+        """
+        B, T, D = h.shape
+        latent_history = []
+        depth_k_cache = []
+        depth_v_cache = []
+
+        halted = torch.zeros(B, T, device=h.device, dtype=torch.bool)
+        cum_p = torch.zeros(B, T, device=h.device)
+        h_accum = torch.zeros_like(h)
+        cos, sin = rope_freqs
+
+        # Telemetry tracking
+        halt_probs_per_loop = []
+        active_tokens_per_loop = []
+
+        for t in range(self.cfg.max_loop_iters):
+            cond = self.council_conditioners.get_conditioner(t)
+
+            # 1. MoDA Attentional Pass (jointly attends to all previous loops)
+            h_norm = self.attn_norm(h + cond)
+            attn_out = self.attn(h_norm, depth_k_cache, depth_v_cache, cos, sin)
+
+            # 2. MoE Pass with Backtracking
+            active_mask = (~halted).view(-1)
+            active_tokens_per_loop.append(active_mask.sum().item())
+
+            p_halt, collision = self.halting(h)
+            halt_probs_per_loop.append(p_halt.mean().item())
+
+            backtrack_signal = (collision > self.cfg.lookahead_entropy_threshold).unsqueeze(-1)
+            h_norm = h_norm + 0.01 * backtrack_signal * torch.randn_like(h_norm)
+
+            moe_out, _ = self.moe(h_norm.view(-1, D), active_mask)
+            moe_out = moe_out.view(B, T, D)
+
+            # 3. Update & Injection
+            trans_out = attn_out + moe_out
+            trans_out = trans_out + self.lora(trans_out)
+            h_new = self.injection(h, e, cond, trans_out)
+            h = torch.where(halted.unsqueeze(-1), h, h_new)
+
+            # 4. Depth Write for MoDA (next loops can attend to this loop)
+            kw = self.k_write(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2)
+            vw = self.v_write(h).view(B, T, self.cfg.n_kv_heads, -1).transpose(1, 2)
+            kw = apply_rotary_emb(kw, cos, sin)
+            depth_k_cache.append(kw)
+            depth_v_cache.append(vw)
+
+            # 5. Halting Accumulation
+            still_running = ~halted
+            remainder = (1.0 - cum_p).clamp(min=0)
+            weight = torch.where(
+                (cum_p + p_halt) >= self.cfg.act_threshold,
+                remainder,
+                p_halt,
+            )
+            if t == self.cfg.max_loop_iters - 1:
+                weight = remainder  # Assign all remaining mass on final loop
+            weight = weight * still_running.float()
+            h_accum = h_accum + weight.unsqueeze(-1) * h
+            cum_p = cum_p + weight
+            halted = halted | (cum_p >= self.cfg.act_threshold)
+
+            latent_history.append(h.detach())
+
+        telemetry = {
+            "halt_probs_per_loop": halt_probs_per_loop,
+            "active_tokens_per_loop": active_tokens_per_loop,
+            "final_cum_p": cum_p.mean().item(),
+            "loops_executed": len(latent_history),
+        }
+
+        return h_accum, latent_history, telemetry
+
+
+# =========================================================================
+# Coda Routing Head
+# =========================================================================
+
+class SEC_CodaRoutingHead(nn.Module):
+    """Output head that can route to any persona's latent state.
+
+    When section_idx is None, uses the unified h_final (post-coda).
+    When section_idx is specified, uses that loop's raw latent state
+    to produce persona-specific output.
+    """
+
+    def __init__(self, dim: int, vocab_size: int):
+        super().__init__()
+        self.output_norm = RMSNorm(dim)
+        self.head = nn.Linear(dim, vocab_size, bias=False)
+
+    def forward(
+        self,
+        h_final: torch.Tensor,
+        history: List[torch.Tensor],
+        section_idx: Optional[int] = None,
+    ) -> torch.Tensor:
+        if section_idx is not None and section_idx < len(history):
+            source_state = history[section_idx]
+        else:
+            source_state = h_final
+        return self.head(self.output_norm(source_state))
+
+
+# =========================================================================
+# Flagship Model: SEC-CORE Unified
+# =========================================================================
+
+class SECCoreUnified(nn.Module):
+    """SEC-CORE Unified — self-contained security analysis RDT model.
+
+    Full pipeline: Prelude → Recurrent SEC Block (8 loops) → Coda → LM Head
+    """
+
+    def __init__(self, cfg: MythosConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.embed = nn.Embedding(cfg.vocab_size, cfg.dim)
+        self.rope = RotaryEmbedding(cfg.dim // cfg.n_heads, cfg.max_seq_len, cfg.rope_theta)
+
+        self.prelude = nn.ModuleList([
+            TransformerBlock(cfg, use_moe=False) for _ in range(cfg.prelude_layers)
+        ])
+        self.recurrent = RecurrentSECBlock(cfg)
+        self.coda = nn.ModuleList([
+            TransformerBlock(cfg, use_moe=False) for _ in range(cfg.coda_layers)
+        ])
+        self.routing_head = SEC_CodaRoutingHead(cfg.dim, cfg.vocab_size)
+        self.routing_head.head.weight = self.embed.weight  # Weight tying
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        section_idx: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        B, T = input_ids.shape
+        x = self.embed(input_ids)
+        cos, sin = self.rope(T)
+        mask = None
+        if T > 1:
+            mask = torch.full(
+                (1, 1, T, T), float("-inf"), device=input_ids.device, dtype=x.dtype
+            )
+            mask = torch.triu(mask, diagonal=1)
+
+        for layer in self.prelude:
+            x = layer(x, (cos, sin), mask)
+
+        e = x
+        h_final, history, telemetry = self.recurrent(x, e, (cos, sin), mask)
+
+        for layer in self.coda:
+            h_final = layer(h_final, (cos, sin), mask)
+
+        logits = self.routing_head(h_final, history, section_idx)
+        return logits, telemetry
+
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 64,
+        temperature: float = 1.0,
+        top_k: int = 50,
+    ) -> torch.Tensor:
+        for _ in range(max_new_tokens):
+            ids = input_ids[:, -self.cfg.max_seq_len :]
+            logits, _ = self.forward(ids)
+            logits = logits[:, -1, :] / max(temperature, 1e-8)
+
+            if top_k > 0:
+                v, _ = logits.topk(min(top_k, logits.size(-1)))
+                logits[logits < v[:, -1:]] = float("-inf")
+
+            probs = F.softmax(logits, dim=-1)
+            next_tok = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_tok], dim=1)
+
+        return input_ids
+
+    @torch.no_grad()
+    def generate_analytical_cycle(
+        self, input_ids: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        persona_loop_map = {
+            "Mythos-Glasswing": 1,
+            "DepthFirst-DevSecOps": 3,
+            "Cyber-Decompiler": 5,
+            "BigSleep-Mimic": 7,
+        }
+
+        results = {}
+        for name, loop_idx in persona_loop_map.items():
+            idx = min(loop_idx, self.cfg.max_loop_iters - 1)
+            logits, _ = self.forward(input_ids, section_idx=idx)
+            results[name] = logits.argmax(dim=-1)
+
+        return results
+
+
+# =========================================================================
+# SecCoreRunner — End-to-End Analysis Pipeline
+# =========================================================================
+
+class SecCoreRunner:
+    def __init__(self, cfg: Optional[MythosConfig] = None, device: str = "cpu"):
+        self.cfg = cfg or MythosConfig()
+        self.device = torch.device(device)
+        self.model = SECCoreUnified(self.cfg).to(self.device).eval()
+        self.tokenizer = get_tokenizer(self.cfg.vocab_size)
+        self._param_count = sum(p.numel() for p in self.model.parameters())
+
+    def analyze(
+        self, target_code: str, max_output_tokens: int = 64
+    ) -> Dict[str, object]:
+        token_ids = self.tokenizer.encode(target_code)
+        token_ids = token_ids[: self.cfg.max_seq_len]
+        input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
+
+        logits, telemetry = self.model(input_ids)
+        cycle = self.model.generate_analytical_cycle(input_ids)
+        output_ids = self.model.generate(
+            input_ids, max_new_tokens=max_output_tokens
+        )
+        generated_ids = output_ids[0, len(token_ids) :].tolist()
+        generated_text = self.tokenizer.decode(generated_ids)
+
+        probs = F.softmax(logits, dim=-1)
+        entropy = -(probs * (probs + 1e-10).log()).sum(-1).mean().item()
+        top1_conf = probs.max(dim=-1).values.mean().item()
+
+        return {
+            "telemetry": {
+                "input_tokens": input_ids.shape[1],
+                "output_entropy": round(entropy, 4),
+                "top1_confidence": round(top1_conf, 4),
+                "loop_depth": telemetry["loops_executed"],
+                "halt_probs": [round(p, 4) for p in telemetry["halt_probs_per_loop"]],
+                "active_tokens": telemetry["active_tokens_per_loop"],
+                "final_cum_halt_p": round(telemetry["final_cum_p"], 4),
+                "active_experts_per_token": self.cfg.k1 * self.cfg.k2,
+                "total_experts": self.cfg.n_experts,
+            },
+            "per_persona": {
+                name: ids[0].tolist() for name, ids in cycle.items()
+            },
+            "generated_text": generated_text,
+            "model_params": self._param_count,
+        }
+
+    def format_output(self, results: Dict[str, object]) -> str:
+        t = results["telemetry"]
+        lines = [
+            "",
+            "======================================================================",
+            "  SEC-CORE UNIFIED ORCHESTRATION NETWORK — ANALYSIS REPORT",
+            "  Version 5.4 | Self-Contained | Zero API Dependencies",
+            "======================================================================",
+            "",
+            "  EXECUTIVE TELEMETRY MATRIX",
+            "  " + "-" * 50,
+            f"  | Input Tokens             | {t['input_tokens']}",
+            f"  | Recurrent Loop Depth     | {t['loop_depth']} iterations (all executed)",
+            f"  | Output Entropy           | {t['output_entropy']}",
+            f"  | Top-1 Confidence         | {t['top1_confidence']}",
+            f"  | Active Experts/Token     | {t['active_experts_per_token']}",
+            f"  | Total Expert Pool        | {t['total_experts']}",
+            f"  | Model Parameters         | {results['model_params']:,}",
+            f"  | Final Cumulative Halt P  | {t['final_cum_halt_p']}",
+            "",
+            "  HALTING TELEMETRY (per loop iteration)",
+            "  " + "-" * 50,
+        ]
+
+        for i, (p, a) in enumerate(zip(t["halt_probs"], t["active_tokens"])):
+            persona = COUNCIL_PERSONAS.get(i, "???")
+            lines.append(
+                f"  | Loop {i} [{persona:25s}] | halt_p={p:.4f}  active={a}"
+            )
+
+        lines += [
+            "",
+            "  QUAD-AGENT COUNCIL ROUTING",
+            "  " + "-" * 50,
+        ]
+
+        for name, role in PERSONA_ROLES.items():
+            tok_ids = results["per_persona"].get(name, [])
+            lines.append(f"  [{name}]")
+            lines.append(f"    Role: {role}")
+            lines.append(f"    Output tokens: {len(tok_ids)} | First 8: {tok_ids[:8]}")
+            lines.append("")
+
+        lines += [
+            "  RAW MODEL OUTPUT",
+            "  " + "-" * 50,
+            "  " + (results["generated_text"][:500] or "(empty)"),
+            "",
+            "======================================================================",
+            "  STATUS: Architecture fully operational at maximum loop depth.",
+            "  NOTE:   Model weights are randomly initialized.",
+            "          Train with training/3b_fine_web_edu.py for real analysis.",
+            "======================================================================",
+            "",
+        ]
+
+        return "\n".join(lines)
+
+
 # ==========================================
-# STAGE 2: HIGH-SPEED INFERENCE GATEWAY
+# HIGH-SPEED INFERENCE GATEWAY
 # ==========================================
+
 class InferenceGateway:
     def __init__(self, repo_index=None):
         self.repo_index = repo_index
@@ -85,11 +677,12 @@ class InferenceGateway:
         self.api_url = os.getenv("CYBER_TOP_API_URL") or "https://api.openai.com/v1/chat/completions"
         self.model_target = os.getenv("CYBER_TOP_MODEL") or "gpt-4o"
         self.use_live_api = self.api_key is not None
+        self.runner = None
 
     async def execute_orchestration(self, target_payload: str) -> str:
         if self.use_live_api:
             return await self._call_live_api(target_payload)
-        return await self._simulate_orchestration(target_payload)
+        return await self._execute_local_rdt(target_payload)
 
     async def _call_live_api(self, payload: str) -> str:
         headers = {
@@ -119,92 +712,27 @@ class InferenceGateway:
         except Exception as e:
             return f"[❌ CRITICAL INFRASTRUCTURE FAILURE]: {str(e)}"
 
-    async def _simulate_orchestration(self, payload: str) -> str:
+    async def _execute_local_rdt(self, payload: str) -> str:
         # Detect if conversational
         if len(payload.split()) < 5 and any(kw in payload.lower() for kw in ["hi", "hello", "who", "help", "hey"]):
             return self._conversational_response(payload)
 
-        # STAGE 2: Intent Parsing & Weight Calculation
-        intent, weights = self._parse_intent(payload)
+        if self.runner is None:
+            # CPU friendly config for fast evaluation
+            cfg = MythosConfig(
+                dim=256,
+                n_heads=4,
+                n_kv_heads=1,
+                n_experts=16,
+                max_loop_iters=8,
+                act_threshold=1.0,
+            )
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.runner = SecCoreRunner(cfg, device=device)
 
-        # Extract features for dynamic response
-        entities = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{3,}', payload)
-        # Filter out common keywords
-        keywords = ["analyze", "check", "detect", "buffer", "overflow", "heap", "stack", "logic", "flaw"]
-        filtered_entities = [e for e in entities if e.lower() not in keywords]
-        entity = filtered_entities[0] if filtered_entities else (entities[0] if entities else "CORE_MODULE")
-
-        # STAGE 3: Quad-Agent Council Simulation
-        # Simulate agent outputs based on input content
-        vuln_type = "Buffer Overflow" if "buffer" in payload.lower() or "malloc" in payload.lower() else \
-                    "Injection Vector" if "query" in payload.lower() or "exec" in payload.lower() else \
-                    "Logic Flaw"
-
-        # Format result according to STAGE 5
-        cwe = "CWE-122: Heap-based Buffer Overflow" if "heap" in payload.lower() else \
-              "CWE-78: OS Command Injection" if "exec" in payload.lower() else \
-              "CWE-20: Improper Input Validation"
-
-        score = f"{random.uniform(6.5, 9.8):.1f}"
-
-        # STAGE 4: Zero-Day Discovery Loop (Simulated)
-        critiques = [
-            f"Blind application of the `{entity}` patch may introduce a 1-byte heap off-by-one error during re-alignment.",
-            f"The tactical fix for `{entity}` lacks thread-safety; high-concurrency environments could trigger a race condition in the validator.",
-            f"Proposed mitigation for `{entity}` might be bypassed by polymorphic payloads using non-standard encoding."
-        ]
-        critique = random.choice(critiques)
-
-        output = f"""
-## Executive Telemetry Matrix
-| Metric | Telemetry Value |
-| :--- | :--- |
-| **Vulnerability Vector** | {cwe} |
-| **Exploitability Score** | {score} |
-| **Rollback Risk** | Low - Targeted hotfix avoids regression in master branch. |
-
-## Unified Coda Analysis
-The SEC-CORE consensus identifies a critical `{vuln_type}` within the `{entity}` component.
-
-**Mythos-Glasswing** reports that the architectural trust boundary between the input handler and the processing engine is non-existent, allowing unvalidated propagation of user-controlled state.
-
-**Cyber-Decompiler** confirms that low-level memory layout for `{entity}` lacks guard pages, making it susceptible to deterministic exploitation.
-
-**BigSleep-Mimic** successfully synthesized a 3-step exploitation chain that bypasses current stack canaries by leveraging a side-channel in the adjacent telemetry module.
-
-**Adversarial Critique (Zero-Day Loop):** {critique}
-
-## Triage Matrix
-### 1. Tactical Patch (Quick Mitigation)
-Inject a strict validation layer at the entry point of `{entity}`.
-```python
-# SEC-CORE AUTOMATED PATCH
-def validated_{entity}(input_data):
-    # Enforce strict length and semantic bounds
-    if not is_valid_format(input_data) or len(input_data) > 1024:
-        SEC_LOG.alert("ADVERSARIAL INPUT BLOCKED")
-        return None
-    return original_{entity}(input_data)
-```
-
-### 2. Strategic Overhaul (Architectural Fix)
-Implement a **Recurrent-Depth Validator (RDV)** inspired by the OpenMythos RDT architecture found in `mythos_unified.py`. This uses adaptive halting to process input complexity proportional to its risk score.
-
-### 3. Defensive Telemetry
-```yara
-rule SEC_CORE_DYNAMIC_{entity} {{
-    meta:
-        description = "Detects mutation patterns targeting {entity}"
-        author = "SEC-CORE Orchestrator 5.4"
-    strings:
-        $s1 = "{entity}"
-        $hex = {{ 41 41 41 41 41 }}
-    condition:
-        all of them
-}}
-```
-"""
-        return output
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, self.runner.analyze, payload, 32)
+        return self.runner.format_output(results)
 
     def _conversational_response(self, payload: str) -> str:
         repo_files = list(self.repo_index['critical_logic'].keys())[:3] if self.repo_index else ["sec_core_unified.py"]
@@ -222,13 +750,6 @@ I am currently monitoring:
 How can I assist in hardening your architecture today?
 """
 
-    def _parse_intent(self, payload):
-        p = payload.lower()
-        if any(x in p for x in ["exploit", "poc", "0day", "attack"]):
-            return "exploit_simulation", {"depth": 0.9, "stability": 0.1}
-        if any(x in p for x in ["def ", "class ", "func", "return"]):
-            return "production_patching", {"security": 0.8, "performance": 0.2}
-        return "hotfix_optimization", {"performance": 0.6, "security": 0.4}
 
 # --- WEB UI & SERVER ---
 HTML = """
@@ -391,9 +912,9 @@ async def cli_main(gateway, target_path):
         print(f"Failed to read target file: {e}")
         return
 
-    print("\n[⚡ INITIALIZING SEC-CORE UNIFIED ORCHESTRATION NETWORK - VERSION 5.4]")
-    print(f"[🔄 ROUTING INFERENCE] Engine Target: {gateway.model_target}")
-    print("[💥 RUNNING] Quad-Agent Debate & Zero-Day Discovery Loop engaged...")
+    print("\n[>>] INITIALIZING SEC-CORE UNIFIED ORCHESTRATION NETWORK - VERSION 5.4")
+    print(f"[**] CONFIG: dim={gateway.runner.cfg.dim if gateway.runner else 256}")
+    print("[>>] RUNNING: Quad-Agent Debate & Zero-Day Discovery Loop engaged...")
 
     output = await gateway.execute_orchestration(payload)
     print("\n" + "="*60 + "\n" + output + "\n" + "="*60 + "\n")

@@ -15,7 +15,10 @@ from open_mythos.main import (
     loop_index_embedding,
     precompute_rope_freqs,
 )
-from open_mythos.tokenizer import MythosTokenizer
+try:
+    from open_mythos.tokenizer import MythosTokenizer
+except ImportError:
+    MythosTokenizer = None  # transformers not installed; use ByteTokenizer fallback
 from open_mythos.variants import (
     mythos_1b,
     mythos_1t,
