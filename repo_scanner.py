@@ -29,7 +29,7 @@ class RepoScanner:
 
     def _parse_python_file(self, filepath):
         try:
-            with open(filepath, "r") as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
                 tree = ast.parse(content)
 
