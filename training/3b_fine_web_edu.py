@@ -10,6 +10,10 @@ Multi-GPU:
 """
 
 import os
+import sys
+# Ensure we can import open_mythos when running from the repo root or training dir
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import math
 import time
 import torch
@@ -371,11 +375,13 @@ def main():
     # ------------------------------------------------------------------
     # Hyperparameters
     # ------------------------------------------------------------------
+    # Extreme memory conservation for CPU/16GB Space
     seq_len = 2048
-    micro_batch = 4
+    micro_batch = 1
     target_tokens = 30_000_000_000
-    grad_accum = max(1, 256 // (world_size * micro_batch))
-    global_batch_tok = world_size * micro_batch * grad_accum * seq_len
+    # Simulate a larger batch size over time
+    grad_accum = 256
+    global_batch_tok = micro_batch * grad_accum * seq_len
     total_steps = target_tokens // global_batch_tok
     warmup_steps = 2000
     lr = 3e-4
@@ -425,8 +431,12 @@ def main():
             else nullcontext()
         )
 
-    # FSDP handles its own mixed precision; only need autocast for single-GPU
-    amp_ctx = nullcontext() if ddp else amp_ctx  # type: ignore[possibly-undefined]
+    # Handle CPU environments by not trying to initialize amp_dtype on cpu
+    if "cpu" in device:
+        amp_ctx = nullcontext()
+        amp_dtype = torch.float32
+    else:
+        amp_ctx = nullcontext() if ddp else amp_ctx  # type: ignore[possibly-undefined]
 
     if master:
         n_params = sum(p.numel() for p in model.parameters())
