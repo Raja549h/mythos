@@ -702,7 +702,7 @@ L('    print("=" * 70)')
 L()
 
 # Now write the complete file
-out_path = r'C:\Users\lokes\Downloads\OpenMythos-main\OpenMythos-main\mythos_unified.py'
+out_path = os.path.join(os.path.dirname(__file__), 'mythos_unified.py')
 with open(out_path, 'w') as f:
     f.write('\n'.join(lines))
 

@@ -1,5 +1,5 @@
 import os
-import re
+
 import ast
 
 class RepoScanner:
@@ -63,8 +63,9 @@ class RepoScanner:
                     "file": rel_filepath,
                     "definitions": file_sigs
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.error(f"Error parsing {filepath}: {e}")
 
 if __name__ == "__main__":
     scanner = RepoScanner()

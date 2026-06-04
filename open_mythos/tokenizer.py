@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer
 
-DEFAULT_MODEL_ID = "openai/gpt-oss-20b"
+DEFAULT_MODEL_ID = "gpt2"
 
 
 class MythosTokenizer:

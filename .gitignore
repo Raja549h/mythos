@@ -1,8 +1,7 @@
-__pycache__/
+﻿__pycache__/
 .venv/
 
 .env
-
 image/
 audio/
 video/
@@ -14,17 +13,14 @@ Cargo.lock
 .claude/
 .pytest_cache
 dist
-
 databases
 static/generated
 conversations/
 sjfdkdjad9si_dsksdjks
 next_swarms_update.txt
-.pytest_cache
 infra.md
 runs
 Financial-Analysis-Agent_state.json
-conversations/
 models/
 evolved_gpt2_models/
 experimental
@@ -43,7 +39,6 @@ sec_agent
 Devin_state.json
 poetry.lock
 hire_researchers
-agent_workspace
 json_logs
 Medical Image Diagnostic Agent_state.json
 flight agent_state.json
@@ -55,10 +50,8 @@ artifacts_once
 transcript_generator.json
 venv
 .DS_Store
-Cargo.lock
 .DS_STORE
 artifacts_logs
-Cargo.lock
 Medical Treatment Recommendation Agent_state.json
 swarms/agents/.DS_Store
 artifacts_two
@@ -70,10 +63,8 @@ t1_state.json
 stderr_log.txt
 t2_state.json
 .vscode
-.DS_STORE
 # Byte-compiled / optimized / DLL files
 Transcript Generator_state.json
-__pycache__/
 *.py[cod]
 *$py.class
 .grit
@@ -82,11 +73,7 @@ error.txt
 Devin Worker 2_state.json
 # C extensions
 *.so
-.ruff_cache
-
-
 errors.txt
-
 Autonomous-Agent-XYZ1B_state.json
 # Distribution / packaging
 .Python
@@ -107,17 +94,14 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
-
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -132,57 +116,44 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
-
 # Translations
 *.mo
 *.pot
-
 # Django stuff:
 *.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
-
 # Flask stuff:
 instance/
 .webassets-cache
-
 # Scrapy stuff:
 .scrapy
-
 # Sphinx documentation
 docs/_build/
-
 # PyBuilder
 .pybuilder/
-target/
-
 # Jupyter Notebook
 .ipynb_checkpoints
-
 # IPython
 profile_default/
 ipython_config.py
-.DS_Store
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
 #   intended to run in multiple environments; otherwise, check them in:
 # .python-version
-
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
 #   However, in case of collaboration, if having platform-specific dependencies or dependencies
 #   having no cross-platform support, pipenv may install dependencies that don't work, or not
 #   install all needed dependencies.
 #Pipfile.lock
-
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 #   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
 #poetry.lock
-
 # pdm
 #   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
 #pdm.lock
@@ -190,50 +161,37 @@ ipython_config.py
 #   in version control.
 #   https://pdm.fming.dev/#use-with-ide
 .pdm.toml
-
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
-
 # Celery stuff
 celerybeat-schedule
 celerybeat.pid
-
 # SageMath parsed files
 *.sage.py
-
 # Environments
-.env
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
-
 # Spyder project settings
 .spyderproject
 .spyproject
-
 # Rope project settings
 .ropeproject
-
 # mkdocs documentation
 /site
-
 # mypy
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
 # Pyre type checker
 .pyre/
-
 # pytype static type analyzer
 .pytype/
-
 # Cython debug symbols
 cython_debug/
-
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
@@ -250,46 +208,32 @@ cython_debug/
 auto-save-list
 tramp
 .\#*
-
 # Org-mode
 .org-id-locations
 *_archive
-
 # flymake-mode
 *_flymake.*
-
 # eshell files
 /eshell/history
 /eshell/lastdir
-
 # elpa packages
 /elpa/
-
 # reftex files
 *.rel
-
 # AUCTeX auto folder
 /auto/
-
 # cask packages
 .cask/
-dist/
-
 # Flycheck
 flycheck_*.el
-
 # server auth directory
 /server/
-
 # projectiles files
 .projectile
-
 # directory configuration
 .dir-locals.el
-
 # network security
 /network-security.data
-
 # Agent Skills - User-created skill directories
 # Keep example_skills/ committed for reference
 # Ignore common user skill directory patterns
@@ -298,133 +242,3 @@ flycheck_*.el
 /custom_skills/
 /*_skills/
 !example_skills/
-
-
-
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/#use-with-ide
-.pdm.toml
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-.vscode/settings.json
-# -*- mode: gitignore; -*-
-*~
-\#*\#
-/.emacs.desktop
-/.emacs.desktop.lock
-*.elc
-auto-save-list
-tramp
-.\#*
-
-# Org-mode
-.org-id-locations
-*_archive
-
-# flymake-mode
-*_flymake.*
-
-# eshell files
-/eshell/history
-/eshell/lastdir
-
-# elpa packages
-/elpa/
-
-# reftex files
-*.rel
-
-# AUCTeX auto folder
-/auto/
-
-# cask packages
-.cask/
-dist/
-
-# Flycheck
-flycheck_*.el
-
-# server auth directory
-/server/
-
-# projectiles files
-.projectile
-
-# directory configuration
-.dir-locals.el
-
-# network security
-/network-security.data
-

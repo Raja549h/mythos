@@ -5,7 +5,6 @@ per-persona routing, halting gate behavior, and the runner pipeline.
 """
 
 import torch
-import torch.nn as nn
 from sec_core_unified import (
     SECCoreUnified,
     MythosConfig,
@@ -210,12 +209,11 @@ def test_runner_pipeline():
 
 def test_no_api_dependency():
     """Verify no network-dependent imports are required for core operation."""
-    print("\nTEST: No external API dependency...")
-    # The core model should work without aiohttp, openai, anthropic, requests
-    import importlib
-    for mod_name in ["aiohttp", "openai", "anthropic", "requests"]:
-        # These should NOT be required for sec_core_unified to function
-        pass  # If we got here, sec_core_unified imported successfully without them
+    import sys
+    print("TEST: No external API dependency...")
+    modules = ["aiohttp", "requests", "openai", "httpx"]
+    for mod in modules:
+        assert mod not in sys.modules, f"{mod} should not be imported when running local inference."
     print(f"  No API libraries required OK")
 
 

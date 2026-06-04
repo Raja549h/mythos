@@ -2,16 +2,13 @@ import os
 import sys
 import json
 import asyncio
-import random
-import re
-import aiohttp
+import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 from repo_scanner import RepoScanner
 
@@ -445,7 +442,7 @@ class SEC_CodaRoutingHead(nn.Module):
 
     def __init__(self, dim: int, vocab_size: int):
         super().__init__()
-        self.output_norm = RMSNorm(dim)
+        self.output_norm = RMSNorm(dim, eps=1e-6)
         self.head = nn.Linear(dim, vocab_size, bias=False)
 
     def forward(
@@ -979,6 +976,7 @@ class InferenceGateway:
             "temperature": 0.15
         }
         try:
+            import aiohttp
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.api_url, headers=headers, json=data) as response:
                     if response.status == 200:
@@ -1163,22 +1161,60 @@ HTML = """
 
 class Handler(BaseHTTPRequestHandler):
     GATEWAY = None
-    def _h(self, ct='text/html'):
+    
+    def send_cors_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+
+    def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Content-type', ct)
+        self.send_cors_headers()
         self.end_headers()
+
+    def _h(self, ct='text/html', status=200):
+        self.send_response(status)
+        self.send_header('Content-type', ct)
+        self.send_cors_headers()
+        self.end_headers()
+
     def do_GET(self):
-        self._h()
-        self.wfile.write(HTML.encode())
+        if self.path == '/' or self.path == '/index.html':
+            self._h()
+            self.wfile.write(HTML.encode())
+        else:
+            self._h('text/plain', 404)
+            self.wfile.write(b'Not Found')
+
     def do_POST(self):
-        if self.path == '/api/v1/analyze':
-            cl = int(self.headers['Content-Length'])
-            data = json.loads(self.rfile.read(cl))
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            res = loop.run_until_complete(self.GATEWAY.execute_orchestration(data['payload']))
+        if self.path != '/api/v1/analyze':
+            self._h('application/json', 404)
+            self.wfile.write(json.dumps({"error": "Not Found"}).encode())
+            return
+            
+        try:
+            cl = int(self.headers.get('Content-Length', 0))
+            if cl == 0 or cl > 1024 * 1024 * 5:  # 5MB limit
+                raise ValueError("Invalid Content-Length")
+            body = self.rfile.read(cl)
+            data = json.loads(body)
+            payload = data['payload']
+        except Exception as e:
+            self._h('application/json', 400)
+            self.wfile.write(json.dumps({"error": f"Bad Request: {e}"}).encode())
+            return
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            res = loop.run_until_complete(self.GATEWAY.execute_orchestration(payload))
             self._h('application/json')
             self.wfile.write(json.dumps({"output": res}).encode())
+        except Exception as e:
+            self._h('application/json', 500)
+            self.wfile.write(json.dumps({"error": f"Internal Server Error: {e}"}).encode())
+        finally:
+            loop.close()
 
 async def cli_main(gateway, target_path):
     try:
